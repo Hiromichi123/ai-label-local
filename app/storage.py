@@ -87,6 +87,7 @@ class Storage:
         if replace_existing:
             self.clear_images(project_id)
             project = self.project(project_id)
+            base = self._project_path(project_id)
         imported = []
         for source in image_files:
             source = Path(source)
