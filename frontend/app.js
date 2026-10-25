@@ -29,13 +29,40 @@ function renderClasses() {
   }));
 }
 function renderImages() {
-  $('images').replaceChildren(...state.images.map(image => { const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`; item.textContent = `${image.filename} (${image.status})`; item.onclick = () => selectImage(image.id); return item; }));
+  $('images').replaceChildren(...state.images.map(image => {
+    const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
+    const name = document.createElement('span'); name.textContent = image.filename;
+    const status = document.createElement('span'); status.className = image.status === 'labeled' ? 'image-check' : 'image-state';
+    status.textContent = image.status === 'labeled' ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
+    item.append(name, status); item.onclick = () => selectImage(image.id); return item;
+  }));
 }
-async function selectImage(id) {
+async function saveCurrentImage() {
+  if (!state.current || !state.project) return true;
+  const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {
+    method: 'PUT', ...jsonOptions({version: state.version, boxes: state.annotations})
+  });
+  state.version = result.version;
+  const current = state.images.find(image => image.id === state.current);
+  if (current) { current.status = 'labeled'; current.box_count = state.annotations.length; }
+  renderImages();
+  return true;
+}
+async function selectImage(id, saveBefore = true) {
+  if (state.current === id) return;
+  if (saveBefore && state.current) {
+    try { await saveCurrentImage(); } catch (error) { message(`自动保存失败：${error.message}`); return; }
+  }
   state.current = id; state.selected = -1; state.history = [];
   const result = await api(`/api/projects/${state.project.id}/images/${id}/annotations`);
   state.annotations = result.boxes; state.version = result.version;
   renderImages(); await draw(); await checkSaveStatus();
+}
+function navigateImage(delta) {
+  if (!state.images.length || !state.current) return;
+  const index = state.images.findIndex(image => image.id === state.current);
+  const next = Math.max(0, Math.min(state.images.length - 1, index + delta));
+  if (next !== index) selectImage(state.images[next].id).catch(error => message(error.message));
 }
 async function checkSaveStatus() {
   const indicator = $('saveStatus');
@@ -100,7 +127,7 @@ $('canvas').addEventListener('pointerdown', event => {
 $('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = state.annotations.length - 1; draw(); };
 $('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; draw(); };
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; draw(); } };
-$('save').onclick = async () => { try { const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {method:'PUT', ...jsonOptions({version: state.version, boxes: state.annotations})}); state.version = result.version; message('标注已保存'); await selectProject(state.project.id); } catch (e) { message(e.message); } };
+$('save').onclick = async () => { try { await saveCurrentImage(); await selectProject(state.project.id); message('标注已保存'); } catch (e) { message(e.message); } };
 $('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'center_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
 $('addClass').onclick = async () => {
@@ -125,5 +152,15 @@ $('import').onclick = async () => {
   } catch(e) { message(e.message); }
 };
 $('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value)})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
-$('export').onclick = async () => { if (!state.project) return; try { const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
+$('export').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
+document.addEventListener('keydown', event => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable) return;
+  if (event.key === 'ArrowUp') { event.preventDefault(); navigateImage(-1); }
+  if (event.key === 'ArrowDown') { event.preventDefault(); navigateImage(1); }
+});
+$('canvas').addEventListener('mousedown', event => {
+  if (event.button === 3 || event.button === 4) { event.preventDefault(); navigateImage(event.button === 3 ? -1 : 1); }
+});
+$('canvas').addEventListener('contextmenu', event => event.preventDefault());
 loadProjects().catch(e => message(e.message));

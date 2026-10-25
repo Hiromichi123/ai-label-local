@@ -53,6 +53,28 @@ class Storage:
                 continue
         return sorted(result, key=lambda item: item["name"].lower())
 
+    def refresh_image_statuses(self, project_id: str) -> dict:
+        project = self.project(project_id)
+        class_count = len(project["class_names"])
+        changed = False
+        for record in project["images"].values():
+            label_path = self._project_path(project_id) / "labels" / f"{record['id']}.txt"
+            try:
+                boxes = load_label(label_path, record["width"], record["height"], class_count)
+                status = "labeled"
+                count = len(boxes)
+            except (OSError, ValueError):
+                status = "invalid"
+                count = record.get("box_count", 0)
+            if record.get("status") != status or record.get("box_count") != count:
+                record["status"] = status
+                record["box_count"] = count
+                changed = True
+        if changed:
+            project["version"] += 1
+            self._write_json(self._project_path(project_id) / "project.json", project)
+        return project
+
     def add_class(self, project_id: str, name: str) -> dict:
         project = self.project(project_id)
         name = name.strip()

@@ -39,7 +39,7 @@ def create_project(request: ProjectCreate):
 @router.get("/projects/{project_id}")
 def project(project_id: str):
     try:
-        return storage.project(project_id)
+        return storage.refresh_image_statuses(project_id)
     except FileNotFoundError:
         error(404, "project not found")
 
