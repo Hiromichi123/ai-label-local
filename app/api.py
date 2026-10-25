@@ -78,6 +78,14 @@ def image_asset(project_id: str, image_id: str):
     return FileResponse(path, media_type="image/jpeg")
 
 
+@router.get("/projects/{project_id}/images/{image_id}/annotation-status")
+def annotation_status(project_id: str, image_id: str):
+    try:
+        return storage.annotation_status(project_id, image_id)
+    except FileNotFoundError:
+        error(404, "image not found")
+
+
 @router.get("/projects/{project_id}/images/{image_id}/annotations")
 def annotations(project_id: str, image_id: str):
     try:

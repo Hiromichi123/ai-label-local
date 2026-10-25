@@ -101,8 +101,27 @@ class Storage:
 
     def annotations(self, project_id: str, image_id: str) -> dict:
         record = self.image_record(project_id, image_id)
-        boxes = load_label(self._project_path(project_id) / "labels" / f"{image_id}.txt", record["width"], record["height"], len(self.project(project_id)["class_names"]))
+        label_path = self._project_path(project_id) / "labels" / f"{image_id}.txt"
+        boxes = load_label(label_path, record["width"], record["height"], len(self.project(project_id)["class_names"]))
         return {"version": record.get("version", 0), "boxes": [box.model_dump() for box in boxes]}
+
+    def annotation_status(self, project_id: str, image_id: str) -> dict:
+        project = self.project(project_id)
+        record = self.image_record(project_id, image_id)
+        label_path = self._project_path(project_id) / "labels" / f"{image_id}.txt"
+        if not label_path.is_file():
+            return {"saved": False, "valid": False, "file_exists": False, "box_count": 0,
+                    "version": record.get("version", 0), "status": "missing"}
+        try:
+            boxes = load_label(label_path, record["width"], record["height"], len(project["class_names"]))
+        except (OSError, ValueError) as exc:
+            return {"saved": True, "valid": False, "file_exists": True, "box_count": None,
+                    "version": record.get("version", 0), "status": "invalid", "error": str(exc)}
+        metadata_count = record.get("box_count")
+        valid = metadata_count == len(boxes)
+        return {"saved": True, "valid": valid, "file_exists": True, "box_count": len(boxes),
+                "version": record.get("version", 0), "status": record.get("status", "saved") if valid else "mismatch",
+                "error": None if valid else "project metadata does not match label file"}
 
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
         project = self.project(project_id)

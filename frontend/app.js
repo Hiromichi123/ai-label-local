@@ -27,7 +27,19 @@ async function selectImage(id) {
   state.current = id; state.selected = -1; state.history = [];
   const result = await api(`/api/projects/${state.project.id}/images/${id}/annotations`);
   state.annotations = result.boxes; state.version = result.version;
-  renderImages(); await draw();
+  renderImages(); await draw(); await checkSaveStatus();
+}
+async function checkSaveStatus() {
+  const indicator = $('saveStatus');
+  if (!state.current) { indicator.textContent = '未检查'; indicator.className = 'save-status'; return; }
+  try {
+    const status = await api(`/api/projects/${state.project.id}/images/${state.current}/annotation-status`);
+    indicator.className = `save-status ${status.valid ? 'ok' : status.saved ? 'warn' : 'error'}`;
+    indicator.textContent = status.valid ? `已保存 · ${status.box_count} 个框` : status.status === 'missing' ? '标签未保存' : `标签${status.status}`;
+    indicator.title = status.error || '本地标签文件校验通过';
+  } catch (error) {
+    indicator.className = 'save-status error'; indicator.textContent = '无法检查标签'; indicator.title = error.message;
+  }
 }
 function canvasPoint(event) {
   const canvas = $('canvas'), rect = canvas.getBoundingClientRect();
