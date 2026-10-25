@@ -89,7 +89,6 @@ class Storage:
             project = self.project(project_id)
         imported = []
         for source in image_files:
-        for source in files:
             source = Path(source)
             if source.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
