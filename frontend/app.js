@@ -89,7 +89,7 @@ async function draw() {
   const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
   state.annotations.forEach((box, index) => { ctx.strokeStyle = index === state.selected ? '#ffdf5d' : '#4cff91'; ctx.lineWidth = Math.max(2, canvas.width / 400); ctx.strokeRect(box.x1, box.y1, box.x2-box.x1, box.y2-box.y1); ctx.fillStyle = ctx.strokeStyle; ctx.font = `${Math.max(14, canvas.width / 45)}px sans-serif`; ctx.fillText(`${box.class_id}${box.confidence == null ? '' : ` ${(box.confidence * 100).toFixed(0)}%`}`, box.x1 + 3, Math.max(16, box.y1 - 4)); });
   if (state.crosshair) {
-    ctx.save(); ctx.strokeStyle = '#ff3030'; ctx.lineWidth = Math.max(1, canvas.width / 900); ctx.setLineDash([Math.max(4, canvas.width / 180), Math.max(4, canvas.width / 180)]);
+    ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(3, canvas.width / 260); ctx.setLineDash([Math.max(10, canvas.width / 90), Math.max(8, canvas.width / 110)]);
     ctx.beginPath(); ctx.moveTo(state.crosshair.x, 0); ctx.lineTo(state.crosshair.x, canvas.height); ctx.moveTo(0, state.crosshair.y); ctx.lineTo(canvas.width, state.crosshair.y); ctx.stroke(); ctx.restore();
   }
   $('selection').textContent = state.selected >= 0 ? `框 ${state.selected + 1}` : '未选中';
