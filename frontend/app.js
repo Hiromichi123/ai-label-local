@@ -1,4 +1,4 @@
-const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [] };
+const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 1 };
 const $ = (id) => document.getElementById(id);
 const message = (text) => { $('message').textContent = text; };
 async function api(url, options = {}) {
@@ -84,6 +84,8 @@ async function draw() {
   if (!state.current) return;
   const image = new Image(); image.src = `/api/projects/${state.project.id}/images/${state.current}/asset`; await image.decode();
   const canvas = $('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  canvas.style.width = `${image.naturalWidth * state.zoom}px`;
+  canvas.style.height = `${image.naturalHeight * state.zoom}px`;
   const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
   state.annotations.forEach((box, index) => { ctx.strokeStyle = index === state.selected ? '#ffdf5d' : '#4cff91'; ctx.lineWidth = Math.max(2, canvas.width / 400); ctx.strokeRect(box.x1, box.y1, box.x2-box.x1, box.y2-box.y1); ctx.fillStyle = ctx.strokeStyle; ctx.font = `${Math.max(14, canvas.width / 45)}px sans-serif`; ctx.fillText(`${box.class_id}${box.confidence == null ? '' : ` ${(box.confidence * 100).toFixed(0)}%`}`, box.x1 + 3, Math.max(16, box.y1 - 4)); });
   $('selection').textContent = state.selected >= 0 ? `框 ${state.selected + 1}` : '未选中';
@@ -163,4 +165,9 @@ $('canvas').addEventListener('mousedown', event => {
   if (event.button === 3 || event.button === 4) { event.preventDefault(); navigateImage(event.button === 3 ? -1 : 1); }
 });
 $('canvas').addEventListener('contextmenu', event => event.preventDefault());
+$('zoomRange').oninput = event => {
+  state.zoom = Number(event.target.value) / 100;
+  $('zoomValue').textContent = `${event.target.value}%`;
+  draw();
+};
 loadProjects().catch(e => message(e.message));
