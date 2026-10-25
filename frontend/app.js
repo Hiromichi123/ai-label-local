@@ -33,7 +33,7 @@ function renderImages() {
     const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
     const name = document.createElement('span'); name.textContent = image.filename;
     const status = document.createElement('span'); status.className = image.status === 'labeled' ? 'image-check' : 'image-state';
-    status.textContent = image.status === 'labeled' ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
+    status.textContent = image.status === 'labeled' && image.box_count > 0 ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
     item.append(name, status); item.onclick = () => selectImage(image.id); return item;
   }));
 }

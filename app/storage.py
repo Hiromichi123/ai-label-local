@@ -61,8 +61,8 @@ class Storage:
             label_path = self._project_path(project_id) / "labels" / f"{record['id']}.txt"
             try:
                 boxes = load_label(label_path, record["width"], record["height"], class_count)
-                status = "labeled"
                 count = len(boxes)
+                status = "labeled" if count > 0 else "unlabeled"
             except (OSError, ValueError):
                 status = "invalid"
                 count = record.get("box_count", 0)
@@ -176,9 +176,10 @@ class Storage:
         metadata_consistent = metadata_count == len(boxes)
         # The label file is the source of truth for whether annotations were
         # saved correctly. Metadata can be stale after an interrupted write.
+        has_labels = len(boxes) > 0
         return {"saved": True, "valid": True, "file_exists": True, "box_count": len(boxes),
                 "metadata_consistent": metadata_consistent,
-                "version": record.get("version", 0), "status": record.get("status", "saved"),
+                "version": record.get("version", 0), "status": record.get("status", "saved") if has_labels else "unlabeled",
                 "error": None if metadata_consistent else "project metadata is stale; label file is valid"}
 
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
