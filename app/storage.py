@@ -66,10 +66,29 @@ class Storage:
         return {"class_id": len(project["class_names"]) - 1, "name": name,
                 "class_names": project["class_names"], "version": project["version"]}
 
-    def import_files(self, project_id: str, files: list[Path]) -> list[dict]:
+    def clear_images(self, project_id: str) -> None:
         project = self.project(project_id)
         base = self._project_path(project_id)
+        for directory in (base / "images", base / "labels", base / "originals"):
+            directory.mkdir(parents=True, exist_ok=True)
+            for child in directory.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+        project["images"] = {}
+        project["version"] += 1
+        self._write_json(base / "project.json", project)
+
+    def import_files(self, project_id: str, files: list[Path], replace_existing: bool = False) -> list[dict]:
+        project = self.project(project_id)
+        base = self._project_path(project_id)
+        image_files = [Path(source) for source in files if Path(source).suffix.lower() in IMAGE_EXTENSIONS]
+        if replace_existing:
+            self.clear_images(project_id)
+            project = self.project(project_id)
         imported = []
+        for source in image_files:
         for source in files:
             source = Path(source)
             if source.suffix.lower() not in IMAGE_EXTENSIONS:

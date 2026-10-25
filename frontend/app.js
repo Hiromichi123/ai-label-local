@@ -114,12 +114,14 @@ $('addClass').onclick = async () => {
   } catch (e) { message(e.message); }
 };
 $('import').onclick = async () => {
-  const selected = $('directory').files.length ? [...$('directory').files] : [...$('files').files];
-  if (!selected.length || !state.project) return;
+  const selected = [...$('directory').files];
+  if (!selected.length || !state.project) { message('请先选择一个目录'); return; }
   const data = new FormData(); selected.forEach(file => data.append('files', file, file.webkitRelativePath || file.name));
   try {
+    message('正在清除旧图片并导入新目录…');
     const result = await api(`/api/projects/${state.project.id}/images/import`, {method:'POST', body:data});
-    await selectProject(state.project.id); message(`导入完成：${result.count} 张图片`);
+    state.current = null; await selectProject(state.project.id); message(`目录导入完成：${result.count} 张图片`);
+    $('directory').value = '';
   } catch(e) { message(e.message); }
 };
 $('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value)})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };

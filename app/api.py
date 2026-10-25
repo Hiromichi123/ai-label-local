@@ -76,8 +76,8 @@ async def import_images(project_id: str, files: list[UploadFile] = File(...)):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(await upload.read())
             paths.append(target)
-        result = storage.import_files(project_id, paths)
-        return {"images": result, "count": len(result)}
+        result = storage.import_files(project_id, paths, replace_existing=True)
+        return {"images": result, "count": len(result), "replaced": True}
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
