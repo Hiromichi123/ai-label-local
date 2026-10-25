@@ -43,12 +43,54 @@ async function draw() {
 }
 function snapshot() { state.history.push(JSON.stringify(state.annotations)); if (state.history.length > 30) state.history.shift(); }
 $('canvas').addEventListener('pointerdown', event => {
-  if (!state.current) return; const p = canvasPoint(event); snapshot();
+  if (!state.current) return;
+  const p = canvasPoint(event);
+  snapshot();
   state.selected = state.annotations.findIndex(b => p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2);
-  if (state.selected < 0) { state.annotations.push({ class_id: 0, x1: p.x, y1: p.y, x2: p.x, y2: p.y, source: 'human', status: 'edited' }); state.selected = state.annotations.length - 1; }
-  const box = state.annotations[state.selected]; const start = {...p}; const original = {...box};
-  const move = e => { const q = canvasPoint(e); if (original.x1 === original.x2) { box.x2 = Math.max(start.x + 2, q.x); box.y2 = Math.max(start.y + 2, q.y); } else { const dx = q.x - start.x, dy = q.y - start.y; box.x1 = Math.max(0, Math.min(canvas.width - (original.x2-original.x1), original.x1 + dx)); box.x2 = box.x1 + original.x2-original.x1; box.y1 = Math.max(0, Math.min(canvas.height - (original.y2-original.y1), original.y1 + dy)); box.y2 = box.y1 + original.y2-original.y1; } draw(); };
-  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); draw(); }; window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  const creating = state.selected < 0;
+  if (creating) {
+    state.annotations.push({ class_id: 0, x1: p.x, y1: p.y, x2: p.x, y2: p.y, source: 'human', status: 'edited' });
+    state.selected = state.annotations.length - 1;
+  }
+  const box = state.annotations[state.selected];
+  const start = { ...p };
+  const original = { ...box };
+  const canvas = $('canvas');
+  canvas.setPointerCapture?.(event.pointerId);
+
+  const move = e => {
+    const q = canvasPoint(e);
+    if (creating) {
+      // Normalize both corners, so dragging works in every direction.
+      box.x1 = Math.max(0, Math.min(start.x, q.x));
+      box.y1 = Math.max(0, Math.min(start.y, q.y));
+      box.x2 = Math.min(canvas.width, Math.max(start.x, q.x));
+      box.y2 = Math.min(canvas.height, Math.max(start.y, q.y));
+    } else {
+      const dx = q.x - start.x;
+      const dy = q.y - start.y;
+      const width = original.x2 - original.x1;
+      const height = original.y2 - original.y1;
+      box.x1 = Math.max(0, Math.min(canvas.width - width, original.x1 + dx));
+      box.x2 = box.x1 + width;
+      box.y1 = Math.max(0, Math.min(canvas.height - height, original.y1 + dy));
+      box.y2 = box.y1 + height;
+    }
+    draw();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    canvas.releasePointerCapture?.(event.pointerId);
+    // Do not leave a zero-area annotation when the pointer only clicked.
+    if (creating && (box.x2 - box.x1 < 2 || box.y2 - box.y1 < 2)) {
+      state.annotations.splice(state.selected, 1);
+      state.selected = -1;
+    }
+    draw();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
 });
 $('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = state.annotations.length - 1; draw(); };
 $('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; draw(); };
