@@ -1,0 +1,15 @@
+* { box-sizing: border-box; }
+body { margin: 0; color: #e8eef7; background: #101722; font: 14px system-ui, sans-serif; }
+header { height: 58px; padding: 0 20px; display: flex; align-items: center; gap: 20px; background: #182536; border-bottom: 1px solid #2c4058; }
+h1 { margin: 0; font-size: 19px; } header span { color: #9bb0c8; }
+main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 58px); }
+aside { padding: 14px; overflow: auto; border-right: 1px solid #2c4058; background: #141e2c; }
+section { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid #26374c; }
+h2 { margin: 0 0 9px; font-size: 14px; color: #aec4dc; }
+button, input, select { border: 1px solid #3d5875; border-radius: 5px; padding: 7px 8px; color: #e8eef7; background: #1b2a3d; }
+button { cursor: pointer; margin: 3px 2px 3px 0; } button:hover { background: #294462; }
+input, select { width: 100%; margin: 3px 0 7px; } label { display: block; color: #a9bdd2; margin-top: 6px; }
+#images { max-height: 290px; overflow: auto; } .image-item { padding: 7px; cursor: pointer; border-radius: 4px; } .image-item:hover, .image-item.active { background: #2a4664; }
+.workspace { display: flex; flex-direction: column; min-width: 0; } .toolbar { padding: 10px; border-bottom: 1px solid #2c4058; } #selection { margin-left: 10px; color: #a9bdd2; }
+.canvas-wrap { flex: 1; display: grid; place-items: center; padding: 20px; overflow: auto; background: #0b111a; } canvas { max-width: min(90vw, 900px); max-height: calc(100vh - 160px); box-shadow: 0 5px 25px #000; cursor: crosshair; }
+.class-row { display: flex; align-items: center; gap: 5px; } .class-row input { flex: 1; margin: 2px 0; }

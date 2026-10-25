@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YOLO 本地标注台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header><h1>YOLO 本地标注台</h1><span id="message">创建项目开始</span></header>
+<main>
+  <aside>
+    <section><h2>项目</h2><select id="projectSelect"></select><button id="newProject">新建项目</button></section>
+    <section><h2>图片</h2><input id="files" type="file" multiple accept="image/*"><button id="import">导入并裁剪</button><div id="images"></div></section>
+    <section><h2>类别</h2><div id="classes"></div></section>
+    <section><h2>智能打标</h2><input id="model" placeholder="本地 .pt 或 .onnx 路径"><label>置信度 <input id="confidence" type="number" value="0.25" min="0" max="1" step="0.01"></label><button id="predict">批量预测</button><div id="job"></div></section>
+    <section><h2>导出</h2><button id="export">导出已审核数据集</button></section>
+  </aside>
+  <section class="workspace"><div class="toolbar"><button id="addBox">新增框</button><button id="deleteBox">删除选中</button><button id="undo">撤销</button><button id="save">保存标注</button><span id="selection">未选中</span></div><div class="canvas-wrap"><canvas id="canvas"></canvas></div></section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
