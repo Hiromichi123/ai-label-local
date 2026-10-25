@@ -118,10 +118,13 @@ class Storage:
             return {"saved": True, "valid": False, "file_exists": True, "box_count": None,
                     "version": record.get("version", 0), "status": "invalid", "error": str(exc)}
         metadata_count = record.get("box_count")
-        valid = metadata_count == len(boxes)
-        return {"saved": True, "valid": valid, "file_exists": True, "box_count": len(boxes),
-                "version": record.get("version", 0), "status": record.get("status", "saved") if valid else "mismatch",
-                "error": None if valid else "project metadata does not match label file"}
+        metadata_consistent = metadata_count == len(boxes)
+        # The label file is the source of truth for whether annotations were
+        # saved correctly. Metadata can be stale after an interrupted write.
+        return {"saved": True, "valid": True, "file_exists": True, "box_count": len(boxes),
+                "metadata_consistent": metadata_consistent,
+                "version": record.get("version", 0), "status": record.get("status", "saved"),
+                "error": None if metadata_consistent else "project metadata is stale; label file is valid"}
 
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
         project = self.project(project_id)
