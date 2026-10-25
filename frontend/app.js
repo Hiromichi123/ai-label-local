@@ -29,28 +29,33 @@ function renderClasses() {
     save.onclick = async () => {
       try {
         const result = await api(`/api/projects/${state.project.id}/classes/${i}`, {method: 'PUT', ...jsonOptions({name: input.value})});
-        state.project.class_names = result.class_names; renderClasses(); message(`类别 ${i} 已更新`);
+        state.project.class_names = result.class_names; renderClasses(); renderCurrentClass(); message(`类别 ${i} 已更新`);
       } catch (error) { message(error.message); }
     };
     row.append(index, input, save); return row;
   }));
+  renderCurrentClass();
+}
+function renderCurrentClass() {
+  const select = $('currentClass');
+  select.replaceChildren(...state.project.class_names.map((name, i) => new Option(`${i}: ${name}`, i)));
+  select.value = state.selected >= 0 ? String(state.annotations[state.selected]?.class_id ?? 0) : '0';
+  select.disabled = state.selected < 0;
+}
+function applyCurrentClass(value) {
+  if (state.selected < 0) return;
+  snapshot(); state.annotations[state.selected].class_id = Number(value); renderBoxList(); renderCurrentClass(); draw();
 }
 function renderBoxList() {
   const list = $('boxList');
   list.replaceChildren(...state.annotations.map((box, index) => {
     const row = document.createElement('div'); row.className = `box-row ${state.selected === index ? 'selected' : ''}`;
-    const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · 类别 ${box.class_id}`;
-    title.onclick = () => { state.selected = index; renderBoxList(); draw(); };
-    const details = document.createElement('div'); details.className = 'box-details';
-    details.textContent = `${Math.round(box.x1)}, ${Math.round(box.y1)} → ${Math.round(box.x2)}, ${Math.round(box.y2)}`;
-    const classSelect = document.createElement('select');
-    state.project.class_names.forEach((name, classId) => classSelect.add(new Option(`${classId}: ${name}`, classId)));
-    classSelect.value = String(box.class_id);
-    classSelect.disabled = state.selected !== index;
-    classSelect.onchange = () => { if (state.selected === index) { snapshot(); box.class_id = Number(classSelect.value); renderBoxList(); draw(); } };
-    const remove = document.createElement('button'); remove.className = 'box-remove'; remove.textContent = '删除'; remove.disabled = state.selected !== index;
-    remove.onclick = event => { event.stopPropagation(); if (state.selected !== index) return; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); draw(); };
-    row.append(title, details, classSelect, remove); return row;
+    const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · ${state.project.class_names[box.class_id] ?? `类别 ${box.class_id}`}`;
+    title.onclick = () => { state.selected = index; renderBoxList(); renderCurrentClass(); draw(); };
+    const remove = document.createElement('button'); remove.className = 'box-remove'; remove.textContent = '×'; remove.title = '删除此框';
+    remove.onclick = event => { event.stopPropagation(); if (state.selected !== index) state.selected = index; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
+    row.onclick = event => { if (event.target !== remove) { state.selected = index; renderBoxList(); renderCurrentClass(); draw(); } };
+    row.append(title, remove); return row;
   }));
 }
 function renderImages() {
@@ -118,6 +123,7 @@ async function draw() {
     ctx.beginPath(); ctx.moveTo(state.crosshair.x, 0); ctx.lineTo(state.crosshair.x, canvas.height); ctx.moveTo(0, state.crosshair.y); ctx.lineTo(canvas.width, state.crosshair.y); ctx.stroke(); ctx.restore();
   }
   $('selection').textContent = state.selected >= 0 ? `框 ${state.selected + 1}` : '未选中';
+  renderCurrentClass();
 }
 function snapshot() { state.history.push(JSON.stringify(state.annotations)); if (state.history.length > 30) state.history.shift(); }
 $('canvas').addEventListener('pointermove', event => {
@@ -162,7 +168,8 @@ $('canvas').addEventListener('pointerdown', event => {
   window.addEventListener('pointerup', up);
 });
 $('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = -1; renderBoxList(); draw(); };
-$('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); draw(); };
+$('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
+$('currentClass').onchange = event => applyCurrentClass(event.target.value);
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
 $('save').onclick = async () => { try { await saveCurrentImage(); await selectProject(state.project.id); message('标注已保存'); } catch (e) { message(e.message); } };
 $('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'center_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
