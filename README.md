@@ -1,25 +1,136 @@
-# YOLO Label Studio Local
+# ai-label-local
 
-Windows 本地离线 YOLO 检测框数据集整理与审核工具。当前版本支持：
+运行在本机或自有服务器上的 YOLO 检测框标注工具。浏览器负责图片与标注交互，Python 后端管理项目、模型推理和数据导出。
 
-- 图片导入并统一为 1:1（默认中心裁剪）；已有 YOLO bbox 会同步变换。
-- 浏览图片、读取 YOLO 标签并在 Canvas 回显。
-- Canvas 新增、拖动、删除和保存 bbox。
-- 通过本地 `.pt`（Ultralytics）或常见 `.onnx` 检测模型批量生成候选框。
-- 导出标准 `images/{train,val,test}`、`labels/{train,val,test}` 和 `dataset.yaml`。
+## 功能
 
-## 启动
+- 按项目管理图片、类别和 YOLO bbox 标签。
+- 导入图片目录，自动匹配同目录同名 `.txt` 检测框标签；原图另存副本。
+- 将工作图处理为正方形，并同步变换已有框；网页新建项目默认中心裁剪，API 另支持 `letterbox_pad` 补边。
+- Canvas 新增、选择、拖动、删除框，支持撤销、缩放和当前类别选择。
+- 图片切换时自动保存；支持 `↑` / `↓` 和鼠标侧键翻图（输入框中不拦截方向键）。
+- 新增类别、修改类别名称，保留已有类别 ID。
+- 使用本地 Ultralytics `.pt` 或常见 YOLO `.onnx` 检测模型批量生成候选框。
+- 导出 `images/{train,val,test}`、`labels/{train,val,test}`、`dataset.yaml` 和拆分清单。
+
+## 环境
+
+- Python **3.11 或 3.12**。
+- 浏览器支持 Canvas 与目录选择；建议使用 Chrome 或 Edge。
+- 基础功能无需 GPU；`.pt` 推理通过可选的 Ultralytics/PyTorch 依赖提供，GPU 使用取决于所安装的 PyTorch。
+
+## Windows 启动
 
 ```powershell
-cd D:\Github\yolo-label-studio-local
+git clone https://github.com/Hiromichi123/ai-label-local.git
+cd ai-label-local
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test,pt,onnx]"
-$env:YOLO_LABEL_WORKSPACE = "D:\Github\yolo-label-studio-local\workspace"
+$env:YOLO_LABEL_WORKSPACE = Join-Path $PWD "workspace"
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-浏览器打开 <http://127.0.0.1:8765>。模型路径必须是本机文件路径；输入图片通过浏览器上传到工作区，不会发送到外部服务。
+打开 <http://127.0.0.1:8765>。已有 Python 3.11/3.12 时，也可用对应解释器创建虚拟环境。
 
-## 目前限制
+仅使用人工标注时可安装 `-e .`；只需要 ONNX 或 PyTorch 推理时，分别安装 `-e ".[onnx]"` 或 `-e ".[pt]"`。
 
-第一版仅支持 YOLO 检测框，不支持 polygon/segmentation。ONNX 适配器覆盖常见 `xywh + class scores` 输出，特殊导出布局需要新增适配器。批量预测写入草稿标签；人工保存后再作为已编辑结果导出。训练、持久化任务队列、复杂数据增强和实例分割属于后续版本。
+## Linux / Gentoo 部署
+
+```bash
+cd ~
+git clone https://github.com/Hiromichi123/ai-label-local.git
+cd ai-label-local
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[test,pt,onnx]'
+export YOLO_LABEL_WORKSPACE="$HOME/ai-label-local/workspace"
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+也可以使用 Python 3.12。部署时保留源码中的 `frontend/` 目录；当前采用源码目录的 editable 安装，前端静态资源由 FastAPI 直接提供，无需 Node.js 构建。
+
+服务器模式下，图片和模型路径均属于**服务器**。在本机建立 SSH 转发后访问网页：
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 user@server
+```
+
+SSH 使用自定义端口时加 `-p 端口`。浏览器访问 <http://127.0.0.1:8765>。应用目前没有账户认证，默认保持回环监听；需要其他接入方式时另配认证和反向代理。
+
+### systemd 用户服务
+
+将以下内容保存为 `~/.config/systemd/user/ai-label-local.service`，把 `/home/USER` 替换为实际家目录：
+
+```ini
+[Unit]
+Description=AI Label Local
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/USER/ai-label-local
+Environment=YOLO_LABEL_WORKSPACE=/home/USER/ai-label-local/workspace
+ExecStart=/home/USER/ai-label-local/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now ai-label-local.service
+systemctl --user status ai-label-local.service
+journalctl --user -u ai-label-local.service -n 50
+```
+
+用户服务在退出 SSH 后是否保持运行取决于主机的 linger 设置，可用 `loginctl show-user "$USER" -p Linger` 查询。
+
+## 标注流程
+
+1. 新建项目，按顺序填写类别名，类别 ID 从 0 开始。
+2. 选择图片目录并导入。**导入会替换当前项目已有图片和标注**；需要保留旧数据时先导出或另建项目。
+3. 手工编辑框，或填写服务器/本机上实际存在的模型文件绝对路径进行批量预测。
+4. 检查预测框，人工保存后导出。预测产生的候选标签不等于已人工验收的标签。
+5. 导出结果保存在项目的 `exports/` 下，页面会显示服务器端导出路径。
+
+支持输入 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`。同名标签每行应为：
+
+```text
+class_id center_x center_y width height
+```
+
+坐标归一化到 `[0, 1]`，以对应图片宽高为基准。类别 ID 必须属于项目类别列表。
+
+## 工作区与备份
+
+使用环境变量 `YOLO_LABEL_WORKSPACE` 指定工作区，默认是启动目录下的 `workspace/`。
+
+```text
+workspace/projects/<project-id>/
+  project.json     # 类别、图片索引及状态
+  originals/       # 导入时保留的原图副本
+  images/          # 正方形工作图
+  labels/          # YOLO 检测框标签
+  exports/         # 导出数据集
+```
+
+备份时保存整个工作区；更新源码时保留工作区和另存的数据集。工作区、数据集、模型权重及虚拟环境均不进入 Git 仓库。详见 [工作区格式](docs/format.md)。
+
+## 开发与测试
+
+```bash
+python -m pip install -e '.[test]'
+python -m pytest -q tests
+```
+
+前端为原生 HTML / CSS / JavaScript，后端使用 FastAPI。接口文档位于运行服务的 `/docs`。
+
+## 当前边界
+
+- 只支持 YOLO **检测框**，不支持多边形、实例分割或堆叠深度标签。
+- `.pt` 适配器加载原生 Ultralytics 模型；自定义网络 checkpoint 需要额外适配。
+- ONNX 适配器支持常见 YOLO 检测输出，不保证兼容所有导出布局。
+- 预测任务在当前进程内执行，重启后任务队列不保留。
+- 数据导出按图片随机拆分；同一场景、视频相邻帧等需要在后续训练前另行做组隔离。
+- 当前不是多人并发标注服务，建议单用户操作同一项目。
