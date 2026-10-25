@@ -35,6 +35,24 @@ function renderClasses() {
     row.append(index, input, save); return row;
   }));
 }
+function renderBoxList() {
+  const list = $('boxList');
+  list.replaceChildren(...state.annotations.map((box, index) => {
+    const row = document.createElement('div'); row.className = `box-row ${state.selected === index ? 'selected' : ''}`;
+    const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · 类别 ${box.class_id}`;
+    title.onclick = () => { state.selected = index; renderBoxList(); draw(); };
+    const details = document.createElement('div'); details.className = 'box-details';
+    details.textContent = `${Math.round(box.x1)}, ${Math.round(box.y1)} → ${Math.round(box.x2)}, ${Math.round(box.y2)}`;
+    const classSelect = document.createElement('select');
+    state.project.class_names.forEach((name, classId) => classSelect.add(new Option(`${classId}: ${name}`, classId)));
+    classSelect.value = String(box.class_id);
+    classSelect.disabled = state.selected !== index;
+    classSelect.onchange = () => { if (state.selected === index) { snapshot(); box.class_id = Number(classSelect.value); renderBoxList(); draw(); } };
+    const remove = document.createElement('button'); remove.className = 'box-remove'; remove.textContent = '删除'; remove.disabled = state.selected !== index;
+    remove.onclick = event => { event.stopPropagation(); if (state.selected !== index) return; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); draw(); };
+    row.append(title, details, classSelect, remove); return row;
+  }));
+}
 function renderImages() {
   $('images').replaceChildren(...state.images.map(image => {
     const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
@@ -63,7 +81,7 @@ async function selectImage(id, saveBefore = true) {
   state.current = id; state.selected = -1; state.history = [];
   const result = await api(`/api/projects/${state.project.id}/images/${id}/annotations`);
   state.annotations = result.boxes; state.version = result.version;
-  renderImages(); await draw(); await checkSaveStatus();
+  renderImages(); renderBoxList(); await draw(); await checkSaveStatus();
 }
 function navigateImage(delta) {
   if (!state.images.length || !state.current) return;
@@ -138,14 +156,14 @@ $('canvas').addEventListener('pointerdown', event => {
       state.annotations.splice(state.selected, 1);
       state.selected = -1;
     }
-    draw();
+    renderBoxList(); draw();
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 });
-$('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = state.annotations.length - 1; draw(); };
-$('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; draw(); };
-$('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; draw(); } };
+$('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = -1; renderBoxList(); draw(); };
+$('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); draw(); };
+$('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
 $('save').onclick = async () => { try { await saveCurrentImage(); await selectProject(state.project.id); message('标注已保存'); } catch (e) { message(e.message); } };
 $('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'center_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
