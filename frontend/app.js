@@ -24,8 +24,15 @@ function renderClasses() {
   $('classes').replaceChildren(...state.project.class_names.map((name, i) => {
     const row = document.createElement('div'); row.className = 'class-row';
     const index = document.createElement('span'); index.textContent = i;
-    const input = document.createElement('input'); input.value = name; input.disabled = true;
-    row.append(index, input); return row;
+    const input = document.createElement('input'); input.value = name; input.title = '修改类别名称';
+    const save = document.createElement('button'); save.textContent = '保存';
+    save.onclick = async () => {
+      try {
+        const result = await api(`/api/projects/${state.project.id}/classes/${i}`, {method: 'PUT', ...jsonOptions({name: input.value})});
+        state.project.class_names = result.class_names; renderClasses(); message(`类别 ${i} 已更新`);
+      } catch (error) { message(error.message); }
+    };
+    row.append(index, input, save); return row;
   }));
 }
 function renderImages() {

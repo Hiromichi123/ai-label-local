@@ -11,7 +11,7 @@ from PIL import Image
 from .config import IMAGE_EXTENSIONS, MODEL_EXTENSIONS, within_workspace
 from .detectors import load_detector
 from .jobs import manager
-from .schemas import AnnotationUpdate, ClassCreate, ExportRequest, PredictRequest, ProjectCreate
+from .schemas import AnnotationUpdate, ClassCreate, ClassRename, ExportRequest, PredictRequest, ProjectCreate
 from .storage import Storage
 
 
@@ -50,6 +50,18 @@ def add_class(project_id: str, request: ClassCreate):
         return storage.add_class(project_id, request.name)
     except FileNotFoundError:
         error(404, "project not found")
+    except ValueError as exc:
+        error(409, str(exc))
+
+
+@router.put("/projects/{project_id}/classes/{class_id}")
+def rename_class(project_id: str, class_id: int, request: ClassRename):
+    try:
+        return storage.rename_class(project_id, class_id, request.name)
+    except FileNotFoundError:
+        error(404, "project not found")
+    except IndexError as exc:
+        error(404, str(exc))
     except ValueError as exc:
         error(409, str(exc))
 

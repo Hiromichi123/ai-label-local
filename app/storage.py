@@ -88,6 +88,21 @@ class Storage:
         return {"class_id": len(project["class_names"]) - 1, "name": name,
                 "class_names": project["class_names"], "version": project["version"]}
 
+    def rename_class(self, project_id: str, class_id: int, name: str) -> dict:
+        project = self.project(project_id)
+        name = name.strip()
+        if not name:
+            raise ValueError("class name must not be blank")
+        if not 0 <= class_id < len(project["class_names"]):
+            raise IndexError("class id outside project classes")
+        if name in project["class_names"] and project["class_names"][class_id] != name:
+            raise ValueError(f"class already exists: {name}")
+        project["class_names"][class_id] = name
+        project["version"] += 1
+        self._write_json(self._project_path(project_id) / "project.json", project)
+        return {"class_id": class_id, "name": name, "class_names": project["class_names"],
+                "version": project["version"]}
+
     def clear_images(self, project_id: str) -> None:
         project = self.project(project_id)
         base = self._project_path(project_id)
