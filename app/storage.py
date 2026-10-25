@@ -53,6 +53,19 @@ class Storage:
                 continue
         return sorted(result, key=lambda item: item["name"].lower())
 
+    def add_class(self, project_id: str, name: str) -> dict:
+        project = self.project(project_id)
+        name = name.strip()
+        if not name:
+            raise ValueError("class name must not be blank")
+        if name in project["class_names"]:
+            raise ValueError(f"class already exists: {name}")
+        project["class_names"].append(name)
+        project["version"] += 1
+        self._write_json(self._project_path(project_id) / "project.json", project)
+        return {"class_id": len(project["class_names"]) - 1, "name": name,
+                "class_names": project["class_names"], "version": project["version"]}
+
     def import_files(self, project_id: str, files: list[Path]) -> list[dict]:
         project = self.project(project_id)
         base = self._project_path(project_id)
@@ -62,6 +75,7 @@ class Storage:
             if source.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
             image_id = uuid.uuid4().hex
+            relative_source = source.relative_to(self.root / "tmp") if source.is_relative_to(self.root / "tmp") else Path(source.name)
             original = base / "originals" / f"{image_id}{source.suffix.lower()}"
             image_path = base / "images" / f"{image_id}.jpg"
             label_path = base / "labels" / f"{image_id}.txt"
@@ -81,7 +95,7 @@ class Storage:
                     project["images"][image_id] = {"id": image_id, "status": "invalid", "error": str(exc)}
                     continue
             label_path.write_text(serialize(boxes, side, side), encoding="utf-8")
-            record = {"id": image_id, "filename": source.name, "path": f"images/{image_id}.jpg", "width": side, "height": side,
+            record = {"id": image_id, "filename": source.name, "source_path": relative_source.as_posix(), "path": f"images/{image_id}.jpg", "width": side, "height": side,
                       "status": "approved" if boxes else "unlabeled", "version": 0, "box_count": len(boxes)}
             project["images"][image_id] = record
             imported.append(record)

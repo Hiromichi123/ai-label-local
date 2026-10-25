@@ -16,9 +16,17 @@ async function loadProjects() {
 async function selectProject(id) {
   state.project = await api(`/api/projects/${id}`);
   state.images = Object.values(state.project.images);
-  $('classes').replaceChildren(...state.project.class_names.map((name, i) => { const row = document.createElement('div'); row.className = 'class-row'; row.innerHTML = `<span>${i}</span><input value="${name}" disabled>`; return row; }));
+  renderClasses();
   renderImages();
   if (state.images.length) await selectImage(state.images[0].id);
+}
+function renderClasses() {
+  $('classes').replaceChildren(...state.project.class_names.map((name, i) => {
+    const row = document.createElement('div'); row.className = 'class-row';
+    const index = document.createElement('span'); index.textContent = i;
+    const input = document.createElement('input'); input.value = name; input.disabled = true;
+    row.append(index, input); return row;
+  }));
 }
 function renderImages() {
   $('images').replaceChildren(...state.images.map(image => { const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`; item.textContent = `${image.filename} (${image.status})`; item.onclick = () => selectImage(image.id); return item; }));
@@ -95,7 +103,25 @@ $('undo').onclick = () => { const previous = state.history.pop(); if (previous) 
 $('save').onclick = async () => { try { const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {method:'PUT', ...jsonOptions({version: state.version, boxes: state.annotations})}); state.version = result.version; message('标注已保存'); await selectProject(state.project.id); } catch (e) { message(e.message); } };
 $('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'center_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
-$('import').onclick = async () => { const files = [...$('files').files]; if (!files.length || !state.project) return; const data = new FormData(); files.forEach(f => data.append('files', f)); try { await api(`/api/projects/${state.project.id}/images/import`, {method:'POST', body:data}); await selectProject(state.project.id); message('导入完成'); } catch(e) { message(e.message); } };
+$('addClass').onclick = async () => {
+  if (!state.project) return;
+  const input = $('newClass'); const name = input.value.trim();
+  if (!name) { message('请输入类别名称'); return; }
+  try {
+    const result = await api(`/api/projects/${state.project.id}/classes`, {method: 'POST', ...jsonOptions({name})});
+    state.project.class_names = result.class_names; renderClasses(); input.value = '';
+    message(`已新增类别 ${result.class_id}: ${name}`);
+  } catch (e) { message(e.message); }
+};
+$('import').onclick = async () => {
+  const selected = $('directory').files.length ? [...$('directory').files] : [...$('files').files];
+  if (!selected.length || !state.project) return;
+  const data = new FormData(); selected.forEach(file => data.append('files', file, file.webkitRelativePath || file.name));
+  try {
+    const result = await api(`/api/projects/${state.project.id}/images/import`, {method:'POST', body:data});
+    await selectProject(state.project.id); message(`导入完成：${result.count} 张图片`);
+  } catch(e) { message(e.message); }
+};
 $('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value)})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
 $('export').onclick = async () => { if (!state.project) return; try { const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
 loadProjects().catch(e => message(e.message));

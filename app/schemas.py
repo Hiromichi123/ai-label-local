@@ -23,6 +23,19 @@ class ProjectCreate(BaseModel):
         return [value.strip() for value in values]
 
 
+class ClassCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("class name must not be blank")
+        return value
+
+
+
 class Box(BaseModel):
     class_id: int = Field(ge=0)
     x1: float = Field(ge=0)

@@ -11,8 +11,8 @@
 <main>
   <aside>
     <section><h2>项目</h2><select id="projectSelect"></select><button id="newProject">新建项目</button></section>
-    <section><h2>图片</h2><input id="files" type="file" multiple accept="image/*"><button id="import">导入并裁剪</button><div id="images"></div></section>
-    <section><h2>类别</h2><div id="classes"></div></section>
+    <section><h2>图片</h2><input id="files" type="file" multiple accept="image/*,.txt"><input id="directory" type="file" webkitdirectory directory multiple accept="image/*,.txt"><button id="import">导入并裁剪</button><div class="hint">可选择图片目录，自动匹配同名 .txt 标签</div><div id="images"></div></section>
+    <section><h2>类别</h2><div id="classes"></div><input id="newClass" placeholder="新增类别名称"><button id="addClass">新增类别</button></section>
     <section><h2>智能打标</h2><input id="model" placeholder="本地 .pt 或 .onnx 路径"><label>置信度 <input id="confidence" type="number" value="0.25" min="0" max="1" step="0.01"></label><button id="predict">批量预测</button><div id="job"></div></section>
     <section><h2>导出</h2><button id="export">导出已审核数据集</button></section>
   </aside>

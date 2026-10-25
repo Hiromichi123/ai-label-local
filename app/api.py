@@ -11,7 +11,7 @@ from PIL import Image
 from .config import IMAGE_EXTENSIONS, MODEL_EXTENSIONS, within_workspace
 from .detectors import load_detector
 from .jobs import manager
-from .schemas import AnnotationUpdate, ExportRequest, PredictRequest, ProjectCreate
+from .schemas import AnnotationUpdate, ClassCreate, ExportRequest, PredictRequest, ProjectCreate
 from .storage import Storage
 
 
@@ -44,18 +44,36 @@ def project(project_id: str):
         error(404, "project not found")
 
 
+@router.post("/projects/{project_id}/classes")
+def add_class(project_id: str, request: ClassCreate):
+    try:
+        return storage.add_class(project_id, request.name)
+    except FileNotFoundError:
+        error(404, "project not found")
+    except ValueError as exc:
+        error(409, str(exc))
+
+
 @router.post("/projects/{project_id}/images/import")
 async def import_images(project_id: str, files: list[UploadFile] = File(...)):
-    project = storage.project(project_id)
+    storage.project(project_id)
     temporary = storage.root / "tmp" / uuid.uuid4().hex
     temporary.mkdir(parents=True, exist_ok=True)
     paths = []
     try:
         for upload in files:
             suffix = Path(upload.filename or "").suffix.lower()
-            if suffix not in IMAGE_EXTENSIONS:
+            if suffix not in IMAGE_EXTENSIONS and suffix != ".txt":
                 continue
-            target = temporary / f"{uuid.uuid4().hex}{suffix}"
+            # Browser directory uploads include a relative path in filename.
+            # Normalize it into a private temp tree; never use it as a project path.
+            relative = Path(upload.filename or "").as_posix().lstrip("/")
+            if not relative or relative.startswith("../") or "/../" in f"/{relative}":
+                error(400, "invalid uploaded relative path")
+            target = (temporary / relative).resolve()
+            if not target.is_relative_to(temporary.resolve()):
+                error(400, "invalid uploaded relative path")
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(await upload.read())
             paths.append(target)
         result = storage.import_files(project_id, paths)
