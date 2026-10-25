@@ -1,4 +1,4 @@
-const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 1 };
+const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 0.35, crosshair: null };
 const $ = (id) => document.getElementById(id);
 const message = (text) => { $('message').textContent = text; };
 async function api(url, options = {}) {
@@ -88,9 +88,19 @@ async function draw() {
   canvas.style.height = `${image.naturalHeight * state.zoom}px`;
   const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
   state.annotations.forEach((box, index) => { ctx.strokeStyle = index === state.selected ? '#ffdf5d' : '#4cff91'; ctx.lineWidth = Math.max(2, canvas.width / 400); ctx.strokeRect(box.x1, box.y1, box.x2-box.x1, box.y2-box.y1); ctx.fillStyle = ctx.strokeStyle; ctx.font = `${Math.max(14, canvas.width / 45)}px sans-serif`; ctx.fillText(`${box.class_id}${box.confidence == null ? '' : ` ${(box.confidence * 100).toFixed(0)}%`}`, box.x1 + 3, Math.max(16, box.y1 - 4)); });
+  if (state.crosshair) {
+    ctx.save(); ctx.strokeStyle = '#ff3030'; ctx.lineWidth = Math.max(1, canvas.width / 900); ctx.setLineDash([Math.max(4, canvas.width / 180), Math.max(4, canvas.width / 180)]);
+    ctx.beginPath(); ctx.moveTo(state.crosshair.x, 0); ctx.lineTo(state.crosshair.x, canvas.height); ctx.moveTo(0, state.crosshair.y); ctx.lineTo(canvas.width, state.crosshair.y); ctx.stroke(); ctx.restore();
+  }
   $('selection').textContent = state.selected >= 0 ? `框 ${state.selected + 1}` : '未选中';
 }
 function snapshot() { state.history.push(JSON.stringify(state.annotations)); if (state.history.length > 30) state.history.shift(); }
+$('canvas').addEventListener('pointermove', event => {
+  if (!state.current) return;
+  state.crosshair = canvasPoint(event);
+  draw();
+});
+$('canvas').addEventListener('pointerleave', () => { state.crosshair = null; draw(); });
 $('canvas').addEventListener('pointerdown', event => {
   if (!state.current) return;
   const p = canvasPoint(event);
