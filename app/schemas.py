@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CropMode(StrEnum):
+    manual_crop = "manual_crop"
     center_crop = "center_crop"
     letterbox_pad = "letterbox_pad"
 
@@ -13,7 +14,7 @@ class CropMode(StrEnum):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     class_names: list[str] = Field(min_length=1)
-    crop_mode: CropMode = CropMode.center_crop
+    crop_mode: CropMode = CropMode.manual_crop
 
     @field_validator("class_names")
     @classmethod
@@ -76,6 +77,12 @@ class Box(BaseModel):
 class AnnotationUpdate(BaseModel):
     version: int = Field(ge=0)
     boxes: list[Box]
+
+
+class CropRequest(BaseModel):
+    version: int = Field(ge=0)
+    left: int = Field(ge=0)
+    top: int = Field(ge=0)
 
 
 class PredictRequest(BaseModel):

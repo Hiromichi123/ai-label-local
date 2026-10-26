@@ -11,7 +11,7 @@ from PIL import Image
 from .config import IMAGE_EXTENSIONS, MODEL_EXTENSIONS, within_workspace
 from .detectors import load_detector
 from .jobs import manager
-from .schemas import AnnotationUpdate, ClassCreate, ClassRename, ExportRequest, PredictRequest, ProjectCreate
+from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, ExportRequest, PredictRequest, ProjectCreate
 from .storage import Storage
 
 
@@ -105,7 +105,19 @@ def image_asset(project_id: str, image_id: str):
         path = storage.image_path(project_id, image_id)
     except FileNotFoundError:
         error(404, "image not found")
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.post("/projects/{project_id}/images/{image_id}/crop")
+def crop_image(project_id: str, image_id: str, request: CropRequest):
+    try:
+        return storage.crop_image(project_id, image_id, request.version, request.left, request.top)
+    except (FileNotFoundError, KeyError):
+        error(404, "image not found")
+    except RuntimeError as exc:
+        error(409, str(exc))
+    except ValueError as exc:
+        error(422, str(exc))
 
 
 @router.get("/projects/{project_id}/images/{image_id}/annotation-status")
@@ -141,6 +153,8 @@ def update_annotations(project_id: str, image_id: str, request: AnnotationUpdate
 @router.post("/projects/{project_id}/predict")
 def predict(project_id: str, request: PredictRequest):
     project = storage.project(project_id)
+    if any(r.get("needs_crop") for r in project["images"].values()):
+        error(409, "请先完成所有非正方形图片的裁剪")
     model_path = Path(request.model_path).expanduser().resolve()
     if model_path.suffix.lower() not in MODEL_EXTENSIONS or not model_path.is_file():
         error(400, "model_path must point to an existing .pt or .onnx file")

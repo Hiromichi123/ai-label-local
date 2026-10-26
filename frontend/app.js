@@ -1,4 +1,5 @@
-const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 0.35, crosshair: null };
+const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 0.35, crosshair: null, crop: null, drawId: 0 };
+const imageCache = new Map();
 const $ = (id) => document.getElementById(id);
 const message = (text) => { $('message').textContent = text; };
 async function api(url, options = {}) {
@@ -14,11 +15,15 @@ async function loadProjects() {
   if (projects.length) await selectProject(projects[0].id);
 }
 async function selectProject(id) {
+  if (state.project && state.project.id !== id && state.current) await saveCurrentImage();
+  state.current = null; state.crop = null; state.annotations = []; state.selected = -1;
+  imageCache.clear();
   state.project = await api(`/api/projects/${id}`);
   state.images = Object.values(state.project.images);
   renderClasses();
   renderImages();
   if (state.images.length) await selectImage(state.images[0].id);
+  else { prepareCrop(); $('canvas').getContext('2d').clearRect(0,0,$('canvas').width,$('canvas').height); }
 }
 function renderClasses() {
   $('classes').replaceChildren(...state.project.class_names.map((name, i) => {
@@ -63,12 +68,12 @@ function renderImages() {
     const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
     const name = document.createElement('span'); name.textContent = image.filename;
     const status = document.createElement('span'); status.className = image.status === 'labeled' ? 'image-check' : 'image-state';
-    status.textContent = image.status === 'labeled' && image.box_count > 0 ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
+    status.textContent = image.needs_crop ? '待裁剪' : image.status === 'labeled' && image.box_count > 0 ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
     item.append(name, status); item.onclick = () => selectImage(image.id); return item;
   }));
 }
 async function saveCurrentImage() {
-  if (!state.current || !state.project) return true;
+  if (!state.current || !state.project || state.crop) return true;
   const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {
     method: 'PUT', ...jsonOptions({version: state.version, boxes: state.annotations})
   });
@@ -86,6 +91,7 @@ async function selectImage(id, saveBefore = true) {
   state.current = id; state.selected = -1; state.history = [];
   const result = await api(`/api/projects/${state.project.id}/images/${id}/annotations`);
   state.annotations = result.boxes; state.version = result.version;
+  prepareCrop();
   renderImages(); renderBoxList(); await draw(); await checkSaveStatus();
 }
 function navigateImage(delta) {
@@ -112,11 +118,15 @@ function canvasPoint(event) {
 }
 async function draw() {
   if (!state.current) return;
-  const image = new Image(); image.src = `/api/projects/${state.project.id}/images/${state.current}/asset`; await image.decode();
+  const drawId = ++state.drawId;
+  const src = `/api/projects/${state.project.id}/images/${state.current}/asset?v=${state.version}`;
+  if (!imageCache.has(src)) { if (imageCache.size >= 3) imageCache.delete(imageCache.keys().next().value); const img = new Image(); img.src = src; imageCache.set(src, img.decode().then(() => img).catch(error => { imageCache.delete(src); throw error; })); }
+  const image = await imageCache.get(src); if (drawId !== state.drawId) return;
   const canvas = $('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
   canvas.style.width = `${image.naturalWidth * state.zoom}px`;
   canvas.style.height = `${image.naturalHeight * state.zoom}px`;
   const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
+  if (state.crop) { drawCrop(ctx, canvas); return; }
   state.annotations.forEach((box, index) => { ctx.strokeStyle = index === state.selected ? '#ffdf5d' : '#4cff91'; ctx.lineWidth = Math.max(2, canvas.width / 400); ctx.strokeRect(box.x1, box.y1, box.x2-box.x1, box.y2-box.y1); ctx.fillStyle = ctx.strokeStyle; ctx.font = `${Math.max(14, canvas.width / 45)}px sans-serif`; ctx.fillText(`${box.class_id}${box.confidence == null ? '' : ` ${(box.confidence * 100).toFixed(0)}%`}`, box.x1 + 3, Math.max(16, box.y1 - 4)); });
   if (state.crosshair) {
     ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(3, canvas.width / 260); ctx.setLineDash([Math.max(10, canvas.width / 90), Math.max(8, canvas.width / 110)]);
@@ -133,7 +143,8 @@ $('canvas').addEventListener('pointermove', event => {
 });
 $('canvas').addEventListener('pointerleave', () => { state.crosshair = null; draw(); });
 $('canvas').addEventListener('pointerdown', event => {
-  if (!state.current) return;
+  if (!state.current || event.button !== 0) return;
+  if (state.crop) { dragCrop(event); return; }
   const p = canvasPoint(event);
   snapshot();
   // Existing boxes are intentionally read-only. Every pointer-down starts a new box.
@@ -167,12 +178,12 @@ $('canvas').addEventListener('pointerdown', event => {
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 });
-$('addBox').onclick = () => { if (!state.current) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = -1; renderBoxList(); draw(); };
+$('addBox').onclick = () => { if (!state.current || state.crop) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = -1; renderBoxList(); draw(); };
 $('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
 $('currentClass').onchange = event => applyCurrentClass(event.target.value);
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
-$('save').onclick = async () => { try { await saveCurrentImage(); await selectProject(state.project.id); message('标注已保存'); } catch (e) { message(e.message); } };
-$('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'center_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
+$('save').onclick = async () => { try { await saveCurrentImage(); await checkSaveStatus(); message('标注已保存'); } catch (e) { message(e.message); } };
+$('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'manual_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
 $('addClass').onclick = async () => {
   if (!state.project) return;
@@ -213,3 +224,15 @@ $('zoomRange').oninput = event => {
   draw();
 };
 loadProjects().catch(e => message(e.message));
+
+function prepareCrop() {
+ const r=state.images.find(x=>x.id===state.current), side=r?Math.min(r.width,r.height):0;
+ state.crop=r?.needs_crop?{left:Math.floor((r.width-side)/2),top:Math.floor((r.height-side)/2),side,width:r.width,height:r.height}:null;
+ $('cropPanel').hidden=!state.crop; ['addBox','deleteBox','save','undo','currentClass'].forEach(id=>$(id).disabled=Boolean(state.crop)); $('boxList').hidden=Boolean(state.crop);
+ if(state.crop){const c=state.crop,h=c.width>c.height; $('cropAxis').textContent=h?'水平位置':'垂直位置'; $('cropPosition').max=Math.max(c.width,c.height)-side; $('cropPosition').value=h?c.left:c.top; $('cropInfo').textContent=`${c.width} × ${c.height} → ${side} × ${side}`; $('selection').textContent='待确认裁剪区域';}
+}
+function setCropPosition(value){if(!state.crop)return; const c=state.crop,p=Math.round(Math.max(0,Math.min(Number(value),Math.max(c.width,c.height)-c.side))); c.left=c.width>c.height?p:0; c.top=c.height>c.width?p:0; $('cropPosition').value=p; draw();}
+function drawCrop(ctx,canvas){const c=state.crop; ctx.fillStyle='rgba(0,0,0,.62)'; ctx.beginPath();ctx.rect(0,0,canvas.width,canvas.height);ctx.rect(c.left,c.top,c.side,c.side);ctx.fill('evenodd');ctx.strokeStyle='#4ee7ed';ctx.lineWidth=Math.max(3,canvas.width/350);ctx.strokeRect(c.left,c.top,c.side,c.side);ctx.save();ctx.lineWidth=Math.max(1,canvas.width/900);ctx.setLineDash([12,8]);for(const n of [1,2]){ctx.beginPath();ctx.moveTo(c.left+c.side*n/3,c.top);ctx.lineTo(c.left+c.side*n/3,c.top+c.side);ctx.moveTo(c.left,c.top+c.side*n/3);ctx.lineTo(c.left+c.side,c.top+c.side*n/3);ctx.stroke();}ctx.restore();}
+function dragCrop(event){const start=canvasPoint(event),horizontal=state.crop.width>state.crop.height,initial=horizontal?state.crop.left:state.crop.top;const move=e=>{if(!state.crop)return;const q=canvasPoint(e);setCropPosition(initial+(horizontal?q.x-start.x:q.y-start.y));};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up);};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);}
+$('cropPosition').oninput=e=>setCropPosition(e.target.value);
+$('confirmCrop').onclick=async()=>{if(!state.crop)return;$('confirmCrop').disabled=true;try{const result=await api(`/api/projects/${state.project.id}/images/${state.current}/crop`,{method:'POST',...jsonOptions({version:state.version,left:state.crop.left,top:state.crop.top})});const i=state.images.findIndex(x=>x.id===state.current);state.images[i]=result.image;state.project.images[state.current]=result.image;state.annotations=result.boxes;state.version=result.version;state.history=[];state.selected=-1;state.crosshair=null;prepareCrop();renderImages();renderBoxList();await draw();await checkSaveStatus();message('数据集图片和标签已永久裁剪，可以开始标注');}catch(e){message(e.message);}finally{$('confirmCrop').disabled=false;}};

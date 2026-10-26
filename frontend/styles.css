@@ -23,3 +23,8 @@ input, select { width: 100%; margin: 3px 0 7px; } label { display: block; color:
 .box-row { display: flex; align-items: center; gap: 6px; padding: 4px; margin-bottom: 5px; border: 1px solid #304965; border-radius: 5px; background: #1b2a3d; cursor: pointer; } .box-row.selected { border-color: #ffdf5d; }
 .box-select { flex: 1; min-width: 0; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; margin: 0; } .box-remove { flex: 0 0 28px; margin: 0; padding: 3px; color: #ff8585; font-size: 18px; line-height: 1; }
 .class-row { display: flex; align-items: center; gap: 5px; } .class-row input { flex: 1; margin: 2px 0; }
+
+.crop-panel{padding:14px;background:#173746;border-bottom:1px solid #43d4e5;display:flex;flex-wrap:wrap;align-items:center;gap:12px}.crop-panel[hidden]{display:none}.crop-panel label{display:flex;align-items:center;gap:10px;margin:0}.crop-panel input{width:240px;margin:0}.crop-panel .hint{flex-basis:100%;color:#c4e6ef;margin:0}button:disabled{opacity:.4;cursor:not-allowed}
+
+@media(max-width:1000px){main{grid-template-columns:230px minmax(0,1fr)}.workspace-body{display:flex;flex-direction:column}.canvas-wrap{min-height:260px}.box-panel{max-height:200px;border-top:1px solid #2c4058}.crop-panel input{max-width:40vw}}
+@media(max-width:700px){main{display:flex;flex-direction:column}main>aside{max-height:200px;border-bottom:1px solid #2c4058}.toolbar{gap:5px}.crop-panel{gap:8px}.crop-panel input{width:200px}.canvas-wrap{min-height:260px}.workspace-body{flex:none}}

@@ -4,6 +4,8 @@ import json
 import re
 import shutil
 import uuid
+from datetime import datetime
+from PIL import Image, ImageOps
 from pathlib import Path
 from .config import IMAGE_EXTENSIONS, within_workspace, workspace_root
 from .image_ops import preprocess
@@ -62,7 +64,10 @@ class Storage:
             try:
                 boxes = load_label(label_path, record["width"], record["height"], class_count)
                 count = len(boxes)
-                status = "labeled" if count > 0 else "unlabeled"
+                previous = record.get("status")
+                status = previous if previous in {"edited", "approved", "predicted"} else ("labeled" if count > 0 else "unlabeled")
+                if record.get("needs_crop"):
+                    status = "needs_crop"
             except (OSError, ValueError):
                 status = "invalid"
                 count = record.get("box_count", 0)
@@ -136,23 +141,22 @@ class Storage:
             image_path = base / "images" / f"{image_id}.jpg"
             label_path = base / "labels" / f"{image_id}.txt"
             shutil.copy2(source, original)
-            transform = preprocess(original, image_path, project["crop_mode"])
+            # Import the full image. Cropping is an explicit, persistent next step.
+            with Image.open(original) as opened:
+                image = ImageOps.exif_transpose(opened).convert("RGB")
+                width, height = image.size
+                image.save(image_path, format="JPEG", quality=95)
             boxes = []
-            side = transform.output_size
             sibling = source.with_suffix(".txt")
             if sibling.is_file():
                 try:
-                    source_width, source_height = transform.source_width, transform.source_height
-                    for box in load_label(sibling, source_width, source_height, len(project["class_names"])):
-                        mapped = transform.box((box.x1, box.y1, box.x2, box.y2))
-                        if mapped:
-                            boxes.append(Box(class_id=box.class_id, x1=mapped[0], y1=mapped[1], x2=mapped[2], y2=mapped[3], source="file", status="draft"))
+                    boxes = load_label(sibling, width, height, len(project["class_names"]))
                 except ValueError as exc:
                     project["images"][image_id] = {"id": image_id, "status": "invalid", "error": str(exc)}
                     continue
-            label_path.write_text(serialize(boxes, side, side), encoding="utf-8")
-            record = {"id": image_id, "filename": source.name, "source_path": relative_source.as_posix(), "path": f"images/{image_id}.jpg", "width": side, "height": side,
-                      "status": "approved" if boxes else "unlabeled", "version": 0, "box_count": len(boxes)}
+            label_path.write_text(serialize(boxes, width, height), encoding="utf-8")
+            record = {"id": image_id, "filename": source.name, "source_path": relative_source.as_posix(), "path": f"images/{image_id}.jpg", "width": width, "height": height,
+                      "needs_crop": width != height, "status": "needs_crop" if width != height else ("approved" if boxes else "unlabeled"), "version": 0, "box_count": len(boxes)}
             project["images"][image_id] = record
             imported.append(record)
         project["version"] += 1
@@ -200,6 +204,8 @@ class Storage:
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
         project = self.project(project_id)
         record = self.image_record(project_id, image_id)
+        if record.get("needs_crop"):
+            raise RuntimeError("请先确认永久裁剪，再保存标注")
         if record.get("version", 0) != version:
             raise RuntimeError("annotation version conflict")
         for box in boxes:
@@ -215,3 +221,50 @@ class Storage:
         project["version"] += 1
         self._write_json(self._project_path(project_id) / "project.json", project)
         return {"version": record["version"], "boxes": [box.model_dump() for box in boxes]}
+
+    def crop_image(self, project_id: str, image_id: str, version: int, left: int, top: int) -> dict:
+        project = self.project(project_id)
+        record = project["images"][image_id]
+        if record.get("version", 0) != version:
+            raise RuntimeError("图片已被修改，请重新打开后裁剪")
+        if not record.get("needs_crop"):
+            raise ValueError("这张图已为正方形，无需重复裁剪")
+        width, height = record["width"], record["height"]
+        side = min(width, height)
+        if left < 0 or top < 0 or left + side > width or top + side > height:
+            raise ValueError("裁剪区域超出图像边界")
+        base = self._project_path(project_id)
+        image_path = self.image_path(project_id, image_id)
+        label_path = base / "labels" / f"{image_id}.txt"
+        boxes = load_label(label_path, width, height, len(project["class_names"]))
+        cropped_boxes = []
+        for box in boxes:
+            x1, y1 = max(0, box.x1 - left), max(0, box.y1 - top)
+            x2, y2 = min(side, box.x2 - left), min(side, box.y2 - top)
+            if x2 > x1 and y2 > y1:
+                cropped_boxes.append(box.model_copy(update={"x1": x1, "y1": y1, "x2": x2, "y2": y2}))
+        with Image.open(image_path) as image:
+            if image.size != (width, height):
+                raise ValueError("图像尺寸与索引不一致")
+            cropped = image.crop((left, top, left + side, top + side))
+        backup = base / "crop_backups" / (image_id + "_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        backup.mkdir(parents=True)
+        for p in (image_path, label_path, base / "project.json"):
+            shutil.copy2(p, backup / p.name)
+        temporary = image_path.with_suffix(".crop.tmp")
+        try:
+            cropped.save(temporary, format="JPEG", quality=95)
+            temporary.replace(image_path)
+            label_path.write_text(serialize(cropped_boxes, side, side), encoding="utf-8")
+            record.update(width=side, height=side, needs_crop=False, version=version + 1,
+                          box_count=len(cropped_boxes), status="unlabeled" if not cropped_boxes else "approved",
+                          crop={"left": left, "top": top, "side": side, "source_width": width, "source_height": height})
+            project["version"] += 1
+            self._write_json(base / "project.json", project)
+        except Exception:
+            for p in (image_path, label_path, base / "project.json"):
+                shutil.copy2(backup / p.name, p)
+            raise
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {"image": record, "version": record["version"], "boxes": [b.model_dump() for b in cropped_boxes]}
