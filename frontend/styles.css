@@ -28,3 +28,5 @@ input, select { width: 100%; margin: 3px 0 7px; } label { display: block; color:
 
 @media(max-width:1000px){main{grid-template-columns:230px minmax(0,1fr)}.workspace-body{display:flex;flex-direction:column}.canvas-wrap{min-height:260px}.box-panel{max-height:200px;border-top:1px solid #2c4058}.crop-panel input{max-width:40vw}}
 @media(max-width:700px){main{display:flex;flex-direction:column}main>aside{max-height:200px;border-bottom:1px solid #2c4058}.toolbar{gap:5px}.crop-panel{gap:8px}.crop-panel input{width:200px}.canvas-wrap{min-height:260px}.workspace-body{flex:none}}
+
+.predict-actions{display:flex;flex-direction:column;gap:4px}.prediction-progress{margin-top:10px}.prediction-progress progress{width:100%;height:15px;accent-color:#4ee7ed}.prediction-progress #job{margin-top:5px;color:#b7d7ef;font-size:12px;white-space:pre-line}.prediction-progress .job-error{color:#ff8585!important}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -88,6 +88,8 @@ class CropRequest(BaseModel):
 class PredictRequest(BaseModel):
     model_path: str = ""
     overwrite_existing: bool = False
+    scope: Literal["unfinished", "current"] = "unfinished"
+    image_id: str | None = None
     confidence: float = Field(default=0.25, ge=0, le=1)
     iou: float = Field(default=0.7, ge=0, le=1)
     image_size: int = Field(default=640, ge=32, le=4096)

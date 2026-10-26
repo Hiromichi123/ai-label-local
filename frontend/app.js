@@ -51,6 +51,7 @@ function renderCurrentClass() {
   select.disabled = state.selected < 0;
 }
 function applyCurrentClass(value) {
+  if (state.predictBusy) return;
   if (state.selected < 0) return;
   snapshot(); state.annotations[state.selected].class_id = Number(value); renderBoxList(); renderCurrentClass(); draw();
 }
@@ -61,7 +62,7 @@ function renderBoxList() {
     const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · ${state.project.class_names[box.class_id] ?? `类别 ${box.class_id}`}`;
     title.onclick = () => { state.selected = index; renderBoxList(); renderCurrentClass(); draw(); };
     const remove = document.createElement('button'); remove.className = 'box-remove'; remove.textContent = '×'; remove.title = '删除此框';
-    remove.onclick = event => { event.stopPropagation(); if (state.selected !== index) state.selected = index; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
+    remove.onclick = event => { event.stopPropagation(); if (state.predictBusy) return; if (state.selected !== index) state.selected = index; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
     row.onclick = event => { if (event.target !== remove) { state.selected = index; renderBoxList(); renderCurrentClass(); draw(); } };
     row.append(title, remove); return row;
   }));
@@ -70,7 +71,7 @@ function renderImages() {
   $('images').replaceChildren(...state.images.map(image => {
     const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
     const name = document.createElement('span'); name.textContent = image.filename;
-    const reviewed = image.box_count > 0 && ['labeled','edited','approved'].includes(image.status);
+    const reviewed = !image.needs_crop && (['edited','approved'].includes(image.status) || (image.status === 'labeled' && image.box_count > 0));
     const status = document.createElement('span'); status.className = reviewed ? 'image-check' : 'image-state';
     status.textContent = image.needs_crop ? '待裁剪' : image.status === 'predicted' ? '候选·待审核' : reviewed ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
     item.append(name, status); item.onclick = () => selectImage(image.id); return item;
@@ -84,11 +85,12 @@ async function saveCurrentImage(force = false) {
   });
   state.version = result.version; state.history = [];
   const current = state.images.find(image => image.id === state.current);
-  if (current) { current.status = 'labeled'; current.box_count = state.annotations.length; }
+  if (current) { current.status = 'edited'; current.box_count = state.annotations.length; }
   renderImages();
   return true;
 }
 async function selectImage(id, saveBefore = true) {
+  if ((state.predictBusy || state.enterBusy) && saveBefore) return;
   if (state.current === id) return;
   if (saveBefore && state.current) {
     try { await saveCurrentImage(); } catch (error) { message(`自动保存失败：${error.message}`); return; }
@@ -100,7 +102,7 @@ async function selectImage(id, saveBefore = true) {
   renderImages(); renderBoxList(); await draw(); await checkSaveStatus();
 }
 function navigateImage(delta) {
-  if (!state.images.length || !state.current) return;
+  if (state.predictBusy || state.enterBusy || !state.images.length || !state.current) return;
   const index = state.images.findIndex(image => image.id === state.current);
   const next = Math.max(0, Math.min(state.images.length - 1, index + delta));
   if (next !== index) selectImage(state.images[next].id).catch(error => message(error.message));
@@ -148,7 +150,7 @@ $('canvas').addEventListener('pointermove', event => {
 });
 $('canvas').addEventListener('pointerleave', () => { state.crosshair = null; draw(); });
 $('canvas').addEventListener('pointerdown', event => {
-  if (!state.current || event.button !== 0) return;
+  if (!state.current || state.predictBusy || state.enterBusy || event.button !== 0) return;
   if (state.crop) { dragCrop(event); return; }
   const p = canvasPoint(event);
   snapshot();
@@ -211,13 +213,67 @@ $('import').onclick = async () => {
     $('directory').value = '';
   } catch(e) { message(e.message); }
 };
-$('predict').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value), image_size: state.defaultImageSize || 640})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
+function setPredictionBusy(busy) {
+  state.predictBusy = busy;
+  ['predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','addBox','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  if (!busy) { prepareCrop(); renderCurrentClass(); }
+}
+function showPredictionProgress(job) {
+  const total = job.total || 0, completed = job.completed || 0;
+  const percent = total ? Math.round(completed / total * 100) : 0;
+  $('predictProgress').value = percent;
+  const names = {queued:'排队中',running:'正在标注',completed:'已完成',failed:'处理结束（有失败）',cancelled:'已取消'};
+  const errors = job.errors || [];
+  $('job').className = errors.length ? 'job-error' : '';
+  $('job').textContent = `${names[job.status] || job.status} · ${completed}/${total} 张 · ${percent}%${errors.length ? `\n失败 ${errors.length} 张：${errors[0]}` : ''}`;
+}
+async function runPrediction(scope) {
+  if (!state.project || state.predictBusy) return;
+  if (scope === 'current' && (!state.current || state.crop)) { message('请先选择图片并确认裁剪'); return; }
+  const projectId = state.project.id, imageId = state.current;
+  try {
+    if (scope !== 'current') await saveCurrentImage();
+    setPredictionBusy(true); $('job').className = ''; $('job').textContent = '正在加载模型…'; $('predictProgress').removeAttribute('value');
+    let job = await api(`/api/projects/${projectId}/predict`, {method:'POST', ...jsonOptions({scope,image_id:imageId,model_path:$('model').value,confidence:Number($('confidence').value),image_size:state.defaultImageSize || 640})});
+    showPredictionProgress(job);
+    while (!['completed','failed','cancelled'].includes(job.status)) {
+      await new Promise(resolve => setTimeout(resolve,400));
+      job = await api(`/api/jobs/${job.id}`); showPredictionProgress(job);
+    }
+    state.project = await api(`/api/projects/${projectId}`); state.images = Object.values(state.project.images);
+    state.current = null; state.history = []; state.annotations = []; state.selected = -1; imageCache.clear();
+    renderClasses(); renderImages();
+    if (imageId && state.project.images[imageId]) await selectImage(imageId,false);
+    message(job.status === 'completed' ? '智能打标完成，结果为待审核候选' : '智能打标结束，请查看失败信息');
+  } catch(e) {
+    $('predictProgress').value = 0; $('job').className = 'job-error'; $('job').textContent = `任务失败：${e.message}`; message(e.message);
+  } finally { setPredictionBusy(false); }
+}
+$('completeImage').onclick = completeCurrentImage;
+$('predictCurrent').onclick = () => runPrediction('current');
+$('predict').onclick = () => runPrediction('unfinished');
 $('export').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
+async function completeCurrentImage() {
+  if (!state.current || state.crop || state.predictBusy || state.enterBusy) return;
+  state.enterBusy = true;
+  try {
+    await saveCurrentImage(true); await checkSaveStatus();
+    const index = state.images.findIndex(image => image.id === state.current);
+    if (index >= 0 && index + 1 < state.images.length) {
+      await selectImage(state.images[index+1].id,false);
+      message('上一张已保存并审核完成，已进入下一张');
+    } else { message('已保存并审核完成，当前是最后一张'); }
+  } catch(e) { message(`保存失败：${e.message}`); }
+  finally { state.enterBusy = false; }
+}
 document.addEventListener('keydown', event => {
   const target = event.target;
-  if (event.key === 'Enter' && state.crop && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !(target instanceof HTMLTextAreaElement) && !target.isContentEditable && (!(target instanceof HTMLInputElement) || target.type === 'range') && !(target instanceof HTMLSelectElement)) {
+  const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
+  if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
     event.preventDefault();
-    if (!$('confirmCrop').disabled) $('confirmCrop').click();
+    if (state.predictBusy || state.enterBusy) return;
+    if (state.crop) { if (!$('confirmCrop').disabled) $('confirmCrop').click(); }
+    else { completeCurrentImage(); }
     return;
   }
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable) return;
@@ -238,7 +294,7 @@ loadProjects().catch(e => message(e.message));
 function prepareCrop() {
  const r=state.images.find(x=>x.id===state.current), side=r?Math.min(r.width,r.height):0;
  state.crop=r?.needs_crop?{left:Math.floor((r.width-side)/2),top:Math.floor((r.height-side)/2),side,width:r.width,height:r.height}:null;
- $('cropPanel').hidden=!state.crop; ['addBox','deleteBox','save','undo','currentClass'].forEach(id=>$(id).disabled=Boolean(state.crop)); $('boxList').hidden=Boolean(state.crop);
+ $('cropPanel').hidden=!state.crop; ['addBox','deleteBox','save','completeImage','undo','currentClass'].forEach(id=>$(id).disabled=Boolean(state.crop)); $('boxList').hidden=Boolean(state.crop);
  if(state.crop){const c=state.crop,h=c.width>c.height; $('cropAxis').textContent=h?'水平位置':'垂直位置'; $('cropPosition').max=Math.max(c.width,c.height)-side; $('cropPosition').value=h?c.left:c.top; $('cropInfo').textContent=`${c.width} × ${c.height} → ${side} × ${side}`; $('selection').textContent='待确认裁剪区域';}
 }
 function setCropPosition(value){if(!state.crop)return; const c=state.crop,p=Math.round(Math.max(0,Math.min(Number(value),Math.max(c.width,c.height)-c.side))); c.left=c.width>c.height?p:0; c.top=c.height>c.width?p:0; $('cropPosition').value=p; draw();}

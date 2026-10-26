@@ -159,16 +159,23 @@ def update_annotations(project_id: str, image_id: str, request: AnnotationUpdate
 @router.post("/projects/{project_id}/predict")
 def predict(project_id: str, request: PredictRequest):
     project = storage.project(project_id)
-    if any(r.get("needs_crop") for r in project["images"].values()):
-        error(409, "请先完成所有非正方形图片的裁剪")
+    if request.scope == "current":
+        if request.image_id not in project["images"]:
+            error(404, "请先选择当前图片")
+        if project["images"][request.image_id].get("needs_crop"):
+            error(409, "请先确认当前图片的裁剪")
+        image_ids = [request.image_id]
+    else:
+        image_ids = [iid for iid, record in project["images"].items()
+                     if not record.get("needs_crop") and
+                     (request.overwrite_existing or
+                      (record.get("status") not in {"edited", "approved", "labeled"} and
+                       (record.get("status") in {"predicted", "needs_review", "invalid"} or not storage.annotations(project_id, iid)["boxes"])))]
+        if not image_ids:
+            error(409, "没有可标注的未完成图片；已确认的标注保留，待裁剪图片需先裁剪")
     model_path = Path(request.model_path or os.environ.get("YOLO_LABEL_DEFAULT_MODEL", "")).expanduser().resolve()
     if model_path.suffix.lower() not in MODEL_EXTENSIONS or not model_path.is_file():
         error(400, "model_path must point to an existing .pt or .onnx file")
-    image_ids = [iid for iid, record in project["images"].items()
-                 if request.overwrite_existing or
-                 (record.get("status") not in {"edited", "approved"} and not storage.annotations(project_id, iid)["boxes"])]
-    if not image_ids:
-        error(409, "没有待预标注图片，已有标注默认保留")
     try:
         detector = load_detector(str(model_path))
     except Exception as exc:
@@ -181,13 +188,24 @@ def predict(project_id: str, request: PredictRequest):
         from .labels import serialize
         from .schemas import Box
         boxes = [Box(class_id=d.class_id, x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if d.x2 > d.x1 and d.y2 > d.y1]
-        # Predictions are only drafts until a human saves or approves them.
-        label = storage._project_path(project_id) / "labels" / f"{image_id}.txt"
-        label.write_text(serialize(boxes, record["width"], record["height"]), encoding="utf-8")
+        # Never overwrite changes made while inference was running.
         project_now = storage.project(project_id)
         record_now = project_now["images"][image_id]
-        record_now.update({"box_count": len(boxes), "status": "predicted", "version": record_now.get("version", 0) + 1})
-        storage._write_json(storage._project_path(project_id) / "project.json", project_now)
+        if record_now.get("version", 0) != record.get("version", 0):
+            raise RuntimeError(f"{record['filename']} 在预测期间已修改，未覆盖")
+        label = storage._project_path(project_id) / "labels" / f"{image_id}.txt"
+        before = label.read_bytes()
+        backup = storage._project_path(project_id) / "prediction_backups" / uuid.uuid4().hex
+        backup.mkdir(parents=True)
+        (backup / (image_id + ".txt")).write_bytes(before)
+        (backup / "image.json").write_text(json.dumps(record_now, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            label.write_text(serialize(boxes, record["width"], record["height"]), encoding="utf-8")
+            record_now.update({"box_count": len(boxes), "status": "predicted", "version": record_now.get("version", 0) + 1})
+            storage._write_json(storage._project_path(project_id) / "project.json", project_now)
+        except Exception:
+            label.write_bytes(before)
+            raise
 
     return manager.submit("predict", image_ids, process).view()
 

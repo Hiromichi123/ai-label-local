@@ -203,7 +203,9 @@ class Storage:
 
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
         project = self.project(project_id)
-        record = self.image_record(project_id, image_id)
+        if image_id not in project["images"]:
+            raise FileNotFoundError("image not found")
+        record = project["images"][image_id]
         if record.get("needs_crop"):
             raise RuntimeError("请先确认永久裁剪，再保存标注")
         if record.get("version", 0) != version:
