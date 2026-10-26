@@ -21,7 +21,7 @@ async function loadProjects() {
 }
 async function selectProject(id) {
   if (state.project && state.project.id !== id && state.current) await saveCurrentImage();
-  if (state.project?.id !== id) { trainingRuns = []; selectedTrainingRun = ''; state.trainingModelProject = null; state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; $('trainModel').value = ''; }
+  if (state.project?.id !== id) { state.activeClass = 0; trainingRuns = []; selectedTrainingRun = ''; state.trainingModelProject = null; state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; $('trainModel').value = ''; }
   state.current = null; state.crop = null; state.annotations = []; state.selected = -1;
   imageCache.clear();
   state.project = await api(`/api/projects/${id}`);
@@ -51,14 +51,30 @@ function renderClasses() {
 }
 function renderCurrentClass() {
   const select = $('currentClass');
-  select.replaceChildren(...state.project.class_names.map((name, i) => new Option(`${i}: ${name}`, i)));
-  select.value = state.selected >= 0 ? String(state.annotations[state.selected]?.class_id ?? 0) : '0';
-  select.disabled = state.selected < 0;
+  const names = state.project?.class_names || [];
+  const signature = JSON.stringify(names);
+  if (select.dataset.classes !== signature) {
+    select.replaceChildren(...names.map((name,i) => new Option(`${i}: ${name}`,i)));
+    select.dataset.classes = signature;
+  }
+  const selected = state.annotations[state.selected];
+  if (selected) state.activeClass = selected.class_id;
+  if (!Number.isInteger(state.activeClass) || state.activeClass < 0 || state.activeClass >= names.length) state.activeClass = 0;
+  select.value = String(state.activeClass);
+  select.disabled = !names.length || Boolean(state.crop || state.predictBusy || state.enterBusy || state.drawing);
 }
 function applyCurrentClass(value) {
-  if (state.predictBusy) return;
-  if (state.selected < 0) return;
-  snapshot(); state.annotations[state.selected].class_id = Number(value); renderBoxList(); renderCurrentClass(); draw();
+  if (!state.project || state.crop || state.predictBusy || state.enterBusy || state.drawing) return;
+  const classId = Number(value);
+  if (!Number.isInteger(classId) || classId < 0 || classId >= state.project.class_names.length) return;
+  state.activeClass = classId;
+  const box = state.annotations[state.selected];
+  if (box && box.class_id !== classId) {
+    snapshot(); box.class_id = classId; box.source = 'human'; box.status = 'edited';
+    $('saveStatus').textContent = '有未保存修改';
+  }
+  renderBoxList(); renderCurrentClass(); draw();
+  message(`当前类别 ${classId}: ${state.project.class_names[classId]}${box ? '（已修改选中框）' : '（用于新框）'}`);
 }
 function renderBoxList() {
   const list = $('boxList');
@@ -317,6 +333,9 @@ document.addEventListener('keydown', event => {
   const target = event.target;
   if (state.drawing) { if (event.key === 'Escape') { event.preventDefault(); state.cancelDrawing?.(); } return; }
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
+  if (/^[0-9]$/.test(event.key) && (!typing || target === $('currentClass')) && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault(); applyCurrentClass(Number(event.key)); return;
+  }
   if (event.key === 'Delete' && !typing && !event.isComposing && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); deleteSelectedBox(); return; }
   if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
     event.preventDefault();

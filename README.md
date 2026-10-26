@@ -175,3 +175,5 @@ python -m pytest -q tests
 进度通过 [Ultralytics 训练回调](https://docs.ultralytics.com/usage/callbacks/) 在每轮验证完成后更新。
 
 远程数据统一放在项目内：`/home/hiro/ai-label-local/datasets/` 存放源数据和早期训练数据，`workspace/projects/` 存放网页标注数据，`workspace/training/` 存放网页训练快照与权重。这些目录均由 `.gitignore` 排除，不上传图片、标签或训练产物。
+
+类别选择：当前标签下拉框在未选框时设置下一次绘制的类别，选中框时修改该框类别；数字 0–9 直接选择同编号类别，支持主键盘和数字小键盘（Num Lock 开启）。输入文本、裁剪、绘制和智能打标期间不触发类别快捷键。下拉框只列出当前项目已有类别，可在左侧新增类别。
