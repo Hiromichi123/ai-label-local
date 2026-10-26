@@ -215,7 +215,7 @@ $('import').onclick = async () => {
 };
 function setPredictionBusy(busy) {
   state.predictBusy = busy;
-  ['predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  ['browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
   if (!busy) { prepareCrop(); renderCurrentClass(); }
 }
 function showPredictionProgress(job) {
@@ -267,7 +267,7 @@ async function completeCurrentImage() {
   finally { state.enterBusy = false; }
 }
 document.addEventListener('keydown', event => {
-  if ($('labelEditor').open) return;
+  if ($('labelEditor').open || $('serverBrowser').open) return;
   const target = event.target;
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
   if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
@@ -303,3 +303,40 @@ function drawCrop(ctx,canvas){const c=state.crop; ctx.fillStyle='rgba(0,0,0,.62)
 function dragCrop(event){const start=canvasPoint(event),horizontal=state.crop.width>state.crop.height,initial=horizontal?state.crop.left:state.crop.top;const move=e=>{if(!state.crop)return;const q=canvasPoint(e);setCropPosition(initial+(horizontal?q.x-start.x:q.y-start.y));};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up);};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);}
 $('cropPosition').oninput=e=>setCropPosition(e.target.value);
 $('confirmCrop').onclick=async()=>{if(!state.crop)return;$('confirmCrop').disabled=true;try{const result=await api(`/api/projects/${state.project.id}/images/${state.current}/crop`,{method:'POST',...jsonOptions({version:state.version,left:state.crop.left,top:state.crop.top})});const i=state.images.findIndex(x=>x.id===state.current);state.images[i]=result.image;state.project.images[state.current]=result.image;state.annotations=result.boxes;state.version=result.version;state.history=[];state.selected=-1;state.crosshair=null;prepareCrop();renderImages();renderBoxList();await draw();await checkSaveStatus();message('数据集图片和标签已永久裁剪，可以开始标注');}catch(e){message(e.message);}finally{$('confirmCrop').disabled=false;}};
+
+let serverSelectedPath = '', serverImportBusy = false;
+async function browseServer(path = '') {
+  $('serverError').textContent = '';
+  try {
+    const data = await api(`/api/server/directories?path=${encodeURIComponent(path)}`);
+    serverSelectedPath = data.path; $('serverPath').value = data.path;
+    $('serverUp').onclick = () => browseServer(data.parent || '');
+    $('serverDirectoryInfo').textContent = data.path ? `当前目录有 ${data.image_count} 张图片（不含子目录）` : '请选择服务器上的目录';
+    $('serverDirectories').replaceChildren(...data.directories.map(d => { const b = document.createElement('button'); b.textContent = `📁 ${d.name}`; b.onclick = () => browseServer(d.path); return b; }));
+    $('serverImport').disabled = !data.path;
+    if (data.path) $('serverProjectName').value = data.path.split(/[\\/]/).filter(Boolean).pop() || '服务器数据集';
+  } catch(e) { $('serverError').textContent = e.message; $('serverImport').disabled = true; }
+}
+$('browseServer').onclick = async () => {
+  if (state.predictBusy || state.enterBusy) return;
+  try { await saveCurrentImage(); } catch(e) { message(e.message); return; }
+  $('serverClasses').value = state.project?.class_names.join(',') || 'object';
+  $('serverBrowser').showModal(); await browseServer();
+};
+$('serverGo').onclick = () => browseServer($('serverPath').value.trim());
+$('serverPath').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); browseServer($('serverPath').value.trim()); } };
+$('serverRoots').onclick = () => browseServer();
+$('serverClose').onclick = () => $('serverBrowser').close();
+$('serverBrowser').addEventListener('cancel', e => { if (serverImportBusy) e.preventDefault(); });
+$('serverImport').onclick = async () => {
+  if (!serverSelectedPath || serverImportBusy) return;
+  serverImportBusy = true; $('serverError').textContent = '';
+  const controls = [...$('serverBrowser').querySelectorAll('button,input')]; controls.forEach(el => el.disabled = true);
+  $('serverImportProgress').hidden = false;
+  try {
+    const result = await api('/api/server/directories/import', {method:'POST', ...jsonOptions({path:serverSelectedPath,name:$('serverProjectName').value.trim(),class_names:$('serverClasses').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),recursive:$('serverRecursive').checked})});
+    await loadProjects(); $('projectSelect').value = result.project_id; await selectProject(result.project_id);
+    $('serverBrowser').close(); message(`服务器目录已导入新项目：${result.count} 张图片`);
+  } catch(e) { $('serverError').textContent = typeof e.message === 'string' ? e.message : '导入失败'; }
+  finally { serverImportBusy = false; controls.forEach(el => el.disabled = false); $('serverImportProgress').hidden = true; }
+};

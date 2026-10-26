@@ -8,13 +8,15 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image
+from PIL import Image, ImageOps
 from .config import IMAGE_EXTENSIONS, MODEL_EXTENSIONS, within_workspace
 from .detectors import load_detector
 from .jobs import manager
 from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, ExportRequest, PredictRequest, ProjectCreate
 from .storage import Storage
-from .labels import parse_yolo
+from .schemas import ServerDirectoryImport
+from .server_directories import roots, resolve_directory, image_files
+from .labels import parse_yolo, load_label
 from .schemas import LabelTextUpdate
 
 
@@ -287,3 +289,69 @@ def export_dataset(project_id: str, request: ExportRequest):
     (output / "dataset.yaml").write_text("path: .\ntrain: images/train\nval: images/val\ntest: images/test\nnames: " + json.dumps(project["class_names"], ensure_ascii=False) + "\n", encoding="utf-8")
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"path": str(output), "counts": {split: len(items) for split, items in splits.items()}, "manifest": len(manifest)}
+
+
+@router.get("/server/directories")
+def server_directories(path: str = ""):
+    allowed = roots(storage.root)
+    if not path:
+        return {"path": "", "parent": None, "directories": [{"name": str(p), "path": str(p)} for p in allowed], "image_count": 0}
+    try:
+        directory = resolve_directory(path, allowed)
+        children = []
+        count = 0
+        for child in directory.iterdir():
+            if child.name.startswith('.'):
+                continue
+            if child.is_dir():
+                try:
+                    resolved = resolve_directory(str(child), allowed)
+                    children.append({"name": child.name, "path": str(resolved)})
+                except (OSError, ValueError):
+                    continue
+            elif child.suffix.lower() in IMAGE_EXTENSIONS:
+                count += 1
+        parent = directory.parent
+        return {"path": str(directory), "parent": str(parent) if parent != directory and any(parent.is_relative_to(p) for p in allowed) else "",
+                "directories": sorted(children, key=lambda x: x["name"].lower()), "image_count": count}
+    except PermissionError as exc:
+        error(403, str(exc))
+    except FileNotFoundError:
+        error(404, "目录不存在")
+    except (OSError, ValueError) as exc:
+        error(422, str(exc))
+
+
+@router.post("/server/directories/import")
+def import_server_directory(request: ServerDirectoryImport):
+    try:
+        allowed = roots(storage.root)
+        directory = resolve_directory(request.path, allowed)
+        files = image_files(directory, allowed, request.recursive)
+        if not files:
+            raise ValueError("所选目录没有支持的图片")
+        # Validate all labels first so a class mismatch never produces broken records.
+        for source in files:
+            try:
+                with Image.open(source) as opened:
+                    image = ImageOps.exif_transpose(opened)
+                    width, height = image.size
+                    image.load()
+                label = source.with_suffix(".txt")
+                if label.is_file():
+                    load_label(label, width, height, len(request.class_names))
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"{source.name}: {exc}") from exc
+        project = storage.create_project(request)
+        try:
+            imported = storage.import_files(project["id"], files)
+        except Exception:
+            shutil.rmtree(storage._project_path(project["id"]))
+            raise
+        return {"project_id": project["id"], "count": len(imported)}
+    except PermissionError as exc:
+        error(403, str(exc))
+    except FileNotFoundError:
+        error(404, "目录不存在")
+    except (OSError, ValueError) as exc:
+        error(422, str(exc))

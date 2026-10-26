@@ -116,3 +116,8 @@ class JobView(BaseModel):
 class LabelTextUpdate(BaseModel):
     version: int = Field(ge=0)
     text: str
+
+
+class ServerDirectoryImport(ProjectCreate):
+    path: str
+    recursive: bool = True
