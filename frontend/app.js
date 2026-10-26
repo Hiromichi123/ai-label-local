@@ -10,6 +10,9 @@ async function api(url, options = {}) {
 }
 function jsonOptions(value) { return { headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }; }
 async function loadProjects() {
+  const config = await api('/api/config');
+  if (!$('model').value) $('model').value = config.default_model_path || '';
+  state.defaultImageSize = config.default_image_size || 640;
   const projects = await api('/api/projects');
   $('projectSelect').replaceChildren(...projects.map(p => { const option = new Option(p.name, p.id); return option; }));
   if (projects.length) await selectProject(projects[0].id);
@@ -206,10 +209,15 @@ $('import').onclick = async () => {
     $('directory').value = '';
   } catch(e) { message(e.message); }
 };
-$('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value)})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
+$('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value), image_size: state.defaultImageSize || 640})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
 $('export').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
 document.addEventListener('keydown', event => {
   const target = event.target;
+  if (event.key === 'Enter' && state.crop && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !(target instanceof HTMLTextAreaElement) && !target.isContentEditable && (!(target instanceof HTMLInputElement) || target.type === 'range') && !(target instanceof HTMLSelectElement)) {
+    event.preventDefault();
+    if (!$('confirmCrop').disabled) $('confirmCrop').click();
+    return;
+  }
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable) return;
   if (event.key === 'ArrowUp') { event.preventDefault(); navigateImage(-1); }
   if (event.key === 'ArrowDown') { event.preventDefault(); navigateImage(1); }

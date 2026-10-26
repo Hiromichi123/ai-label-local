@@ -86,7 +86,8 @@ class CropRequest(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    model_path: str
+    model_path: str = ""
+    overwrite_existing: bool = False
     confidence: float = Field(default=0.25, ge=0, le=1)
     iou: float = Field(default=0.7, ge=0, le=1)
     image_size: int = Field(default=640, ge=32, le=4096)

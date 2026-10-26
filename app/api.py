@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import shutil
 import uuid
@@ -21,6 +22,11 @@ storage = Storage()
 
 def error(status: int, message: str):
     raise HTTPException(status_code=status, detail={"code": "request_error", "message": message})
+
+
+@router.get("/config")
+def config():
+    return {"default_model_path": os.environ.get("YOLO_LABEL_DEFAULT_MODEL", ""), "default_image_size": int(os.environ.get("YOLO_LABEL_DEFAULT_IMAGE_SIZE", "640"))}
 
 
 @router.get("/projects")
@@ -155,10 +161,14 @@ def predict(project_id: str, request: PredictRequest):
     project = storage.project(project_id)
     if any(r.get("needs_crop") for r in project["images"].values()):
         error(409, "请先完成所有非正方形图片的裁剪")
-    model_path = Path(request.model_path).expanduser().resolve()
+    model_path = Path(request.model_path or os.environ.get("YOLO_LABEL_DEFAULT_MODEL", "")).expanduser().resolve()
     if model_path.suffix.lower() not in MODEL_EXTENSIONS or not model_path.is_file():
         error(400, "model_path must point to an existing .pt or .onnx file")
-    image_ids = list(project["images"])
+    image_ids = [iid for iid, record in project["images"].items()
+                 if request.overwrite_existing or
+                 (record.get("status") not in {"edited", "approved"} and not storage.annotations(project_id, iid)["boxes"])]
+    if not image_ids:
+        error(409, "没有待预标注图片，已有标注默认保留")
     try:
         detector = load_detector(str(model_path))
     except Exception as exc:

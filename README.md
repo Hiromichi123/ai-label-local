@@ -153,3 +153,5 @@ python -m pytest -q tests
 默认同步到 `hiro@jinjiao.net:4022` 的 `/home/hiro/ai-label-local/workspace`，可通过 `--host`、`--port`、`--remote-workspace` 修改。通过本机 OpenSSH 的 scp/ssh 交互认证，不保存密码。同步工作图、标签和 project.json；永久裁剪改变了图像坐标，不能只单独传 TXT。原始副本及裁剪备份留在本地，不随包重复上传。远端已有同 ID 项目会备份到 `workspace/sync_backups/`，其他项目保留。
 
 同步期间暂停编辑，完成后刷新远端项目列表。仍有待裁剪图片时拒绝同步。
+
+裁剪界面可按 Enter 确认永久裁剪；在滑块上同样有效，输入文本及中文输入法组合期间不会触发。服务可用 `YOLO_LABEL_DEFAULT_MODEL` 指定默认检测模型；网页自动填入该路径。批量预标注默认仅处理空标签且未人工保存确认的图片，保留现有人工标注；API 的 `overwrite_existing=true` 仅用于明确要求覆盖的情况。
