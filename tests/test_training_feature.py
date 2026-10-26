@@ -138,3 +138,31 @@ def test_cancel_preparation(training_setup, monkeypatch):
         time.sleep(.01)
     assert run['status'] == 'cancelled'
     assert not run['model_available']
+
+
+def test_worker_final_validation_does_not_add_epoch(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from app.training import write_json
+    from app.train_worker import run
+    class FakeYOLO:
+        task = 'detect'
+        def __init__(self, _): self.callbacks = {}
+        def add_callback(self,name,fn): self.callbacks[name] = fn
+        def train(self,**kwargs):
+            for epoch in range(2):
+                trainer = SimpleNamespace(epoch=epoch,metrics={'mAP':.5})
+                self.callbacks['on_train_epoch_end'](trainer)
+                self.callbacks['on_fit_epoch_end'](trainer)
+            self.callbacks['on_fit_epoch_end'](SimpleNamespace(epoch=2,metrics={'mAP':.6}))
+            best = Path(kwargs['project'])/kwargs['name']/'weights'/'best.pt'
+            best.parent.mkdir(parents=True)
+            best.write_bytes(b'checkpoint')
+    monkeypatch.setitem(sys.modules,'ultralytics',SimpleNamespace(YOLO=FakeYOLO))
+    params = TrainingRequest(epochs=2).model_dump()
+    write_json(tmp_path/'config.json',{'path':str(tmp_path),'params':params})
+    run(tmp_path/'config.json')
+    progress = read_json(tmp_path/'progress.json')
+    assert progress['epoch'] == 2
+    assert progress['metrics']['mAP'] == .6
+    assert Path(progress['model_path']).is_file()

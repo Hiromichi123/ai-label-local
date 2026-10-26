@@ -16,6 +16,9 @@ def run(config_path):
         model = YOLO(params['model_path'])
         if model.task != 'detect':
             raise ValueError('仅支持 YOLO 目标检测模型')
+        def train_epoch_end(trainer):
+            # Final best-model validation fires on_fit_epoch_end once more.
+            progress['epoch'] = min(params['epochs'], int(trainer.epoch)+1)
         def epoch_end(trainer):
             metrics = {}
             for key, value in (trainer.metrics or {}).items():
@@ -25,9 +28,10 @@ def run(config_path):
                         metrics[key] = number
                 except (ValueError, TypeError):
                     pass
-            progress.update(epoch=int(trainer.epoch)+1, metrics=metrics)
+            progress.update(metrics=metrics)
             write_json(path/'progress.json', progress)
             print(f"完成轮次 {progress['epoch']}/{params['epochs']} · {metrics}", flush=True)
+        model.add_callback('on_train_epoch_end', train_epoch_end)
         model.add_callback('on_fit_epoch_end', epoch_end)
         options = {k: params[k] for k in ['epochs', 'imgsz', 'batch', 'device', 'lr0', 'patience', 'seed', 'hsv_s', 'hsv_v', 'fliplr', 'mosaic']}
         model.train(data=str(path/'dataset'/'dataset.yaml'), project=str(path/'output'), name='train', exist_ok=True, workers=0, optimizer='AdamW', amp=False, plots=False, save=True, **options)

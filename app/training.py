@@ -125,6 +125,7 @@ class TrainingManager:
         record = read_json(path/'run.json', {})
         progress = read_json(path/'progress.json', {})
         record.update({k: v for k, v in progress.items() if k in {'epoch', 'metrics'}})
+        record['epoch'] = min(record.get('epoch', 0), record.get('params', {}).get('epochs', record.get('epoch', 0)))
         record['model_available'] = record.get('status') == 'completed' and Path(record.get('model_path', '')).is_file()
         if logs:
             try:
