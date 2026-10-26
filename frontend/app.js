@@ -75,12 +75,13 @@ function renderImages() {
     item.append(name, status); item.onclick = () => selectImage(image.id); return item;
   }));
 }
-async function saveCurrentImage() {
+async function saveCurrentImage(force = false) {
   if (!state.current || !state.project || state.crop) return true;
+  if (!force && state.history.length === 0) return true;
   const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {
     method: 'PUT', ...jsonOptions({version: state.version, boxes: state.annotations})
   });
-  state.version = result.version;
+  state.version = result.version; state.history = [];
   const current = state.images.find(image => image.id === state.current);
   if (current) { current.status = 'labeled'; current.box_count = state.annotations.length; }
   renderImages();
@@ -185,7 +186,7 @@ $('addBox').onclick = () => { if (!state.current || state.crop) return; snapshot
 $('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
 $('currentClass').onchange = event => applyCurrentClass(event.target.value);
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
-$('save').onclick = async () => { try { await saveCurrentImage(); await checkSaveStatus(); message('标注已保存'); } catch (e) { message(e.message); } };
+$('save').onclick = async () => { try { await saveCurrentImage(true); await checkSaveStatus(); message('标注已保存'); } catch (e) { message(e.message); } };
 $('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'manual_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
 $('addClass').onclick = async () => {
@@ -209,7 +210,7 @@ $('import').onclick = async () => {
     $('directory').value = '';
   } catch(e) { message(e.message); }
 };
-$('predict').onclick = async () => { if (!state.project) return; try { const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value), image_size: state.defaultImageSize || 640})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
+$('predict').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const job = await api(`/api/projects/${state.project.id}/predict`, {method:'POST', ...jsonOptions({model_path: $('model').value, confidence: Number($('confidence').value), image_size: state.defaultImageSize || 640})}); $('job').textContent = '任务运行中'; const timer = setInterval(async () => { const current = await api(`/api/jobs/${job.id}`); $('job').textContent = `${current.status}: ${current.completed}/${current.total}`; if (['completed','failed','cancelled'].includes(current.status)) { clearInterval(timer); await selectProject(state.project.id); } }, 500); } catch(e) { message(e.message); } };
 $('export').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
 document.addEventListener('keydown', event => {
   const target = event.target;
