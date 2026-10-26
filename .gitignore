@@ -24,6 +24,7 @@ coverage.xml
 /workspace/
 /workspaces/
 /data/
+# Server-side source datasets live inside this project
 /datasets/
 /models/
 /exports/
