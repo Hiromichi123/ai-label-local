@@ -4,7 +4,8 @@ from pathlib import Path
 from .schemas import Box
 
 
-def parse_yolo(text: str, width: int, height: int, class_count: int) -> list[Box]:
+def parse_yolo(text: str, width: int, height: int, class_count: int | list[int]) -> list[Box]:
+    allowed = range(class_count) if isinstance(class_count, int) else class_count
     boxes: list[Box] = []
     for line_number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
@@ -18,7 +19,7 @@ def parse_yolo(text: str, width: int, height: int, class_count: int) -> list[Box
             cx, cy, bw, bh = (float(value) for value in fields[1:])
         except ValueError as exc:
             raise ValueError(f"line {line_number}: non-numeric label") from exc
-        if not 0 <= class_id < class_count or not 0 <= cx <= 1 or not 0 <= cy <= 1 or not 0 < bw <= 1 or not 0 < bh <= 1:
+        if class_id not in allowed or not 0 <= cx <= 1 or not 0 <= cy <= 1 or not 0 < bw <= 1 or not 0 < bh <= 1:
             raise ValueError(f"line {line_number}: values outside YOLO bounds")
         x1, x2 = (cx - bw / 2) * width, (cx + bw / 2) * width
         y1, y2 = (cy - bh / 2) * height, (cy + bh / 2) * height
@@ -39,5 +40,9 @@ def serialize(boxes: list[Box], width: int, height: int) -> str:
     return "\n".join(to_yolo(box, width, height) for box in boxes) + ("\n" if boxes else "")
 
 
-def load_label(path: Path, width: int, height: int, class_count: int) -> list[Box]:
+def load_label(path: Path, width: int, height: int, class_count: int | list[int]) -> list[Box]:
     return parse_yolo(path.read_text(encoding="utf-8") if path.exists() else "", width, height, class_count)
+
+
+def class_ids(project: dict) -> list[int]:
+    return project.get("class_ids", list(range(len(project["class_names"]))))

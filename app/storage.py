@@ -4,17 +4,28 @@ import json
 import re
 import shutil
 import uuid
+import threading
+from functools import wraps
 from datetime import datetime
 from PIL import Image, ImageOps
 from pathlib import Path
 from .config import IMAGE_EXTENSIONS, within_workspace, workspace_root
 from .image_ops import preprocess
-from .labels import load_label, serialize
+from .labels import load_label, serialize, class_ids
 from .schemas import Box, CropMode, ProjectCreate
+
+
+def locked(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class Storage:
     def __init__(self, root: Path | None = None):
+        self.lock = threading.RLock()
         self.root = (root or workspace_root()).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -29,6 +40,7 @@ class Storage:
             raise FileNotFoundError("project not found")
         return json.loads(path.read_text(encoding="utf-8"))
 
+    @locked
     def create_project(self, request: ProjectCreate) -> dict:
         project_id = uuid.uuid4().hex
         path = self._project_path(project_id)
@@ -36,6 +48,7 @@ class Storage:
         (path / "labels").mkdir()
         (path / "originals").mkdir()
         metadata = {"id": project_id, "name": request.name, "class_names": request.class_names,
+                    "class_ids": request.class_ids if request.class_ids is not None else list(range(len(request.class_names))),
                     "crop_mode": request.crop_mode.value, "version": 0, "images": {}}
         self._write_json(path / "project.json", metadata)
         return metadata
@@ -55,9 +68,10 @@ class Storage:
                 continue
         return sorted(result, key=lambda item: item["name"].lower())
 
+    @locked
     def refresh_image_statuses(self, project_id: str) -> dict:
         project = self.project(project_id)
-        class_count = len(project["class_names"])
+        class_count = class_ids(project)
         changed = False
         for record in project["images"].values():
             label_path = self._project_path(project_id) / "labels" / f"{record['id']}.txt"
@@ -80,34 +94,87 @@ class Storage:
             self._write_json(self._project_path(project_id) / "project.json", project)
         return project
 
-    def add_class(self, project_id: str, name: str) -> dict:
+    @locked
+    def rename_project(self, project_id: str, name: str) -> dict:
+        project = self.project(project_id)
+        if any(p['id'] != project_id and p['name'] == name for p in self.list_projects()):
+            raise ValueError('项目名称已存在')
+        project['name'] = name.strip()
+        if not project['name']:
+            raise ValueError('项目名称不能为空')
+        project['version'] += 1
+        self._write_json(self._project_path(project_id)/'project.json',project)
+        return project
+
+    @locked
+    def add_class(self, project_id: str, name: str, class_id: int | None = None) -> dict:
         project = self.project(project_id)
         name = name.strip()
-        if not name:
-            raise ValueError("class name must not be blank")
-        if name in project["class_names"]:
-            raise ValueError(f"class already exists: {name}")
-        project["class_names"].append(name)
-        project["version"] += 1
-        self._write_json(self._project_path(project_id) / "project.json", project)
-        return {"class_id": len(project["class_names"]) - 1, "name": name,
-                "class_names": project["class_names"], "version": project["version"]}
+        ids = class_ids(project)
+        value = class_id if class_id is not None else max(ids, default=-1)+1
+        if not name or name in project['class_names']:
+            raise ValueError('类别名为空或已存在')
+        if value in ids or not 0 <= value <= 999999:
+            raise ValueError('类别编号已存在或超出范围')
+        project['class_names'].append(name)
+        project['class_ids'] = ids+[value]
+        project['version'] += 1
+        self._write_json(self._project_path(project_id)/'project.json',project)
+        return {'class_id':value,'name':name,'class_names':project['class_names'],'class_ids':project['class_ids'],'version':project['version']}
 
-    def rename_class(self, project_id: str, class_id: int, name: str) -> dict:
+    @locked
+    def rename_class(self, project_id: str, class_id: int, name: str, new_id: int | None = None) -> dict:
         project = self.project(project_id)
+        ids = class_ids(project)
+        if class_id not in ids:
+            raise IndexError('class id outside project classes')
+        index = ids.index(class_id)
+        value = class_id if new_id is None else new_id
         name = name.strip()
-        if not name:
-            raise ValueError("class name must not be blank")
-        if not 0 <= class_id < len(project["class_names"]):
-            raise IndexError("class id outside project classes")
-        if name in project["class_names"] and project["class_names"][class_id] != name:
-            raise ValueError(f"class already exists: {name}")
-        project["class_names"][class_id] = name
-        project["version"] += 1
-        self._write_json(self._project_path(project_id) / "project.json", project)
-        return {"class_id": class_id, "name": name, "class_names": project["class_names"],
-                "version": project["version"]}
+        if not name or any(n == name and i != index for i,n in enumerate(project['class_names'])):
+            raise ValueError('类别名为空或已存在')
+        if value != class_id and value in ids or not 0 <= value <= 999999:
+            raise ValueError('类别编号已存在或超出范围')
+        base = self._project_path(project_id)
+        changes = {}
+        if value != class_id:
+            for iid,record in project['images'].items():
+                path = base/'labels'/f'{iid}.txt'
+                text = path.read_text(encoding='utf-8')
+                # Validate before changing anything; preserve original coordinate precision.
+                load_label(path,record['width'],record['height'],ids)
+                lines = text.splitlines(keepends=True)
+                changed = False
+                for i,line in enumerate(lines):
+                    fields = line.split()
+                    if fields and int(fields[0]) == class_id:
+                        lines[i] = re.sub(r'^(\s*)\d+',lambda m:m.group(1)+str(value),line)
+                        changed = True
+                if changed:
+                    changes[path] = ''.join(lines)
+                    record['version'] = record.get('version',0)+1
+        project['class_names'][index] = name
+        ids[index] = value
+        project['class_ids'] = ids
+        project['version'] += 1
+        backup = base/'class_backups'/uuid.uuid4().hex
+        backup.mkdir(parents=True)
+        metadata = base/'project.json'
+        shutil.copy2(metadata,backup/'project.json')
+        for path in changes:
+            shutil.copy2(path,backup/path.name)
+        try:
+            for path,text in changes.items():
+                path.write_text(text,encoding='utf-8')
+            self._write_json(metadata,project)
+        except Exception:
+            for path in changes:
+                shutil.copy2(backup/path.name,path)
+            shutil.copy2(backup/'project.json',metadata)
+            raise
+        return {'class_id':value,'name':name,'class_names':project['class_names'],'class_ids':ids,'version':project['version']}
 
+    @locked
     def clear_images(self, project_id: str) -> None:
         project = self.project(project_id)
         base = self._project_path(project_id)
@@ -122,6 +189,7 @@ class Storage:
         project["version"] += 1
         self._write_json(base / "project.json", project)
 
+    @locked
     def import_files(self, project_id: str, files: list[Path], replace_existing: bool = False) -> list[dict]:
         project = self.project(project_id)
         base = self._project_path(project_id)
@@ -150,7 +218,7 @@ class Storage:
             sibling = source.with_suffix(".txt")
             if sibling.is_file():
                 try:
-                    boxes = load_label(sibling, width, height, len(project["class_names"]))
+                    boxes = load_label(sibling, width, height, class_ids(project))
                 except ValueError as exc:
                     project["images"][image_id] = {"id": image_id, "status": "invalid", "error": str(exc)}
                     continue
@@ -176,7 +244,7 @@ class Storage:
     def annotations(self, project_id: str, image_id: str) -> dict:
         record = self.image_record(project_id, image_id)
         label_path = self._project_path(project_id) / "labels" / f"{image_id}.txt"
-        boxes = load_label(label_path, record["width"], record["height"], len(self.project(project_id)["class_names"]))
+        boxes = load_label(label_path, record["width"], record["height"], class_ids(self.project(project_id)))
         return {"version": record.get("version", 0), "boxes": [box.model_dump() for box in boxes]}
 
     def annotation_status(self, project_id: str, image_id: str) -> dict:
@@ -187,7 +255,7 @@ class Storage:
             return {"saved": False, "valid": False, "file_exists": False, "box_count": 0,
                     "version": record.get("version", 0), "status": "missing"}
         try:
-            boxes = load_label(label_path, record["width"], record["height"], len(project["class_names"]))
+            boxes = load_label(label_path, record["width"], record["height"], class_ids(project))
         except (OSError, ValueError) as exc:
             return {"saved": True, "valid": False, "file_exists": True, "box_count": None,
                     "version": record.get("version", 0), "status": "invalid", "error": str(exc)}
@@ -201,6 +269,7 @@ class Storage:
                 "version": record.get("version", 0), "status": record.get("status", "saved") if has_labels else "unlabeled",
                 "error": None if metadata_consistent else "project metadata is stale; label file is valid"}
 
+    @locked
     def save_annotations(self, project_id: str, image_id: str, version: int, boxes: list[Box]) -> dict:
         project = self.project(project_id)
         if image_id not in project["images"]:
@@ -211,7 +280,7 @@ class Storage:
         if record.get("version", 0) != version:
             raise RuntimeError("annotation version conflict")
         for box in boxes:
-            if box.class_id >= len(project["class_names"]):
+            if box.class_id not in class_ids(project):
                 raise ValueError("class id outside project classes")
             if box.x2 > record["width"] or box.y2 > record["height"]:
                 raise ValueError("box outside image")
@@ -224,6 +293,7 @@ class Storage:
         self._write_json(self._project_path(project_id) / "project.json", project)
         return {"version": record["version"], "boxes": [box.model_dump() for box in boxes]}
 
+    @locked
     def crop_image(self, project_id: str, image_id: str, version: int, left: int, top: int) -> dict:
         project = self.project(project_id)
         record = project["images"][image_id]
@@ -238,7 +308,7 @@ class Storage:
         base = self._project_path(project_id)
         image_path = self.image_path(project_id, image_id)
         label_path = base / "labels" / f"{image_id}.txt"
-        boxes = load_label(label_path, width, height, len(project["class_names"]))
+        boxes = load_label(label_path, width, height, class_ids(project))
         cropped_boxes = []
         for box in boxes:
             x1, y1 = max(0, box.x1 - left), max(0, box.y1 - top)

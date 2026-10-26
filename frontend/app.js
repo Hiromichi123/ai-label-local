@@ -1,5 +1,8 @@
 const state = { project: null, images: [], current: null, annotations: [], version: 0, selected: -1, history: [], zoom: 0.35, crosshair: null, crop: null, drawId: 0 };
 const imageCache = new Map();
+function projectClassIds(p = state.project) { return p?.class_ids || (p?.class_names || []).map((_,i) => i); }
+function className(id) { return state.project?.class_names[projectClassIds().indexOf(id)] ?? `类别 ${id}`; }
+function parseClassSpec(text) { const items = text.split(/[,，]/).map(s => s.trim()).filter(Boolean); const parsed = items.map((s,i) => { const m = s.match(/^(\d+)\s*[:：]\s*(.+)$/); return {id:m?Number(m[1]):i,name:m?m[2].trim():s}; }); return {class_names:parsed.map(x=>x.name),class_ids:parsed.map(x=>x.id)}; }
 const $ = (id) => document.getElementById(id);
 const message = (text) => { $('message').textContent = text; };
 async function api(url, options = {}) {
@@ -34,39 +37,52 @@ async function selectProject(id) {
   else { prepareCrop(); $('canvas').getContext('2d').clearRect(0,0,$('canvas').width,$('canvas').height); }
 }
 function renderClasses() {
-  $('classes').replaceChildren(...state.project.class_names.map((name, i) => {
+  $('classes').replaceChildren(...state.project.class_names.map((name,i) => {
+    const classId = projectClassIds()[i];
     const row = document.createElement('div'); row.className = 'class-row';
-    const index = document.createElement('span'); index.textContent = i;
+    const number = document.createElement('input'); number.type = 'number'; number.min = '0'; number.max = '999999'; number.value = classId; number.setAttribute('aria-label',`类别 ${name} 的编号`);
     const input = document.createElement('input'); input.value = name; input.title = '修改类别名称';
     const save = document.createElement('button'); save.textContent = '保存';
     save.onclick = async () => {
       try {
-        const result = await api(`/api/projects/${state.project.id}/classes/${i}`, {method: 'PUT', ...jsonOptions({name: input.value})});
-        state.project.class_names = result.class_names; renderClasses(); renderCurrentClass(); message(`类别 ${i} 已更新`);
-      } catch (error) { message(error.message); }
+        if (state.predictBusy || state.enterBusy || state.drawing || state.classBusy) return;
+        state.classBusy = true; save.disabled = true;
+        if (number.value === '' || !number.checkValidity()) throw new Error('请输入有效的类别编号');
+        await saveCurrentImage();
+        const result = await api(`/api/projects/${state.project.id}/classes/${classId}`,{method:'PUT',...jsonOptions({name:input.value,class_id:Number(number.value)})});
+        state.project.class_names = result.class_names; state.project.class_ids = result.class_ids;
+        state.activeClass = result.class_id;
+        const current = state.current; state.current = null; state.history = [];
+        if (current) await selectImage(current,false);
+        renderClasses(); await refreshTraining(); message(`类别已更新为 ${result.class_id}: ${result.name}`);
+      } catch(e) { message(e.message); }
+      finally { state.classBusy = false; save.disabled = false; renderCurrentClass(); }
     };
-    row.append(index, input, save); return row;
+    row.append(number,input,save); return row;
   }));
   renderCurrentClass();
 }
 function renderCurrentClass() {
   const select = $('currentClass');
   const names = state.project?.class_names || [];
-  const signature = JSON.stringify(names);
+  const ids = projectClassIds();
+  const signature = JSON.stringify([names,ids]);
   if (select.dataset.classes !== signature) {
-    select.replaceChildren(...names.map((name,i) => new Option(`${i}: ${name}`,i)));
+    select.replaceChildren(...names.map((name,i) => new Option(`${ids[i]}: ${name}`,ids[i])));
     select.dataset.classes = signature;
   }
   const selected = state.annotations[state.selected];
   if (selected) state.activeClass = selected.class_id;
-  if (!Number.isInteger(state.activeClass) || state.activeClass < 0 || state.activeClass >= names.length) state.activeClass = 0;
+  if (!ids.includes(state.activeClass)) state.activeClass = ids[0] ?? 0;
   select.value = String(state.activeClass);
-  select.disabled = !names.length || Boolean(state.crop || state.predictBusy || state.enterBusy || state.drawing);
+  if (document.activeElement !== $('currentClassId')) $('currentClassId').value = String(state.activeClass);
+  select.disabled = !names.length || Boolean(state.crop || state.predictBusy || state.enterBusy || state.drawing || state.classBusy);
+  $('currentClassId').disabled = select.disabled; $('applyClassId').disabled = select.disabled;
 }
 function applyCurrentClass(value) {
   if (!state.project || state.crop || state.predictBusy || state.enterBusy || state.drawing) return;
   const classId = Number(value);
-  if (!Number.isInteger(classId) || classId < 0 || classId >= state.project.class_names.length) return;
+  if (!Number.isInteger(classId) || !projectClassIds().includes(classId)) { message('该编号尚未定义，请先在左侧新增或修改类别编号'); return; }
   state.activeClass = classId;
   const box = state.annotations[state.selected];
   if (box && box.class_id !== classId) {
@@ -74,13 +90,13 @@ function applyCurrentClass(value) {
     $('saveStatus').textContent = '有未保存修改';
   }
   renderBoxList(); renderCurrentClass(); draw();
-  message(`当前类别 ${classId}: ${state.project.class_names[classId]}${box ? '（已修改选中框）' : '（用于新框）'}`);
+  message(`当前类别 ${classId}: ${className(classId)}${box ? '（已修改选中框）' : '（用于新框）'}`);
 }
 function renderBoxList() {
   const list = $('boxList');
   list.replaceChildren(...state.annotations.map((box, index) => {
     const row = document.createElement('div'); row.className = `box-row ${state.selected === index ? 'selected' : ''}`;
-    const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · ${state.project.class_names[box.class_id] ?? `类别 ${box.class_id}`}`;
+    const title = document.createElement('button'); title.className = 'box-select'; title.textContent = `框 ${index + 1} · ${className(box.class_id)}`;
     title.onclick = () => { state.selected = index; renderBoxList(); renderCurrentClass(); draw(); };
     const remove = document.createElement('button'); remove.className = 'box-remove'; remove.textContent = '×'; remove.title = '删除此框';
     remove.onclick = event => { event.stopPropagation(); if (state.predictBusy) return; if (state.selected !== index) state.selected = index; snapshot(); state.annotations.splice(index, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
@@ -250,17 +266,20 @@ function deleteSelectedBox() {
 }
 $('deleteBox').onclick = deleteSelectedBox;
 $('currentClass').onchange = event => applyCurrentClass(event.target.value);
+function applyTypedClass() { const value = $('currentClassId').value; if (!/^\d+$/.test(value)) { message('请输入非负整数类别编号'); return; } applyCurrentClass(value); }
+$('applyClassId').onclick = applyTypedClass;
+$('currentClassId').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); e.stopPropagation(); applyTypedClass(); } };
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
 $('save').onclick = async () => { try { await saveCurrentImage(true); await checkSaveStatus(); message('标注已保存'); } catch (e) { message(e.message); } };
-$('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, class_names: classes.split(',').map(x => x.trim()), crop_mode: 'manual_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
+$('newProject').onclick = async () => { const name = prompt('项目名称', '我的数据集'); const classes = prompt('类别名（逗号分隔）', 'object'); if (!name || !classes) return; try { await api('/api/projects', {method:'POST', ...jsonOptions({name, ...parseClassSpec(classes), crop_mode: 'manual_crop'})}); await loadProjects(); message('项目已创建'); } catch(e) { message(e.message); } };
 $('projectSelect').onchange = e => selectProject(e.target.value);
 $('addClass').onclick = async () => {
   if (!state.project) return;
   const input = $('newClass'); const name = input.value.trim();
   if (!name) { message('请输入类别名称'); return; }
   try {
-    const result = await api(`/api/projects/${state.project.id}/classes`, {method: 'POST', ...jsonOptions({name})});
-    state.project.class_names = result.class_names; renderClasses(); input.value = '';
+    const result = await api(`/api/projects/${state.project.id}/classes`, {method: 'POST', ...jsonOptions({name,class_id:$('newClassId').value === '' ? null : Number($('newClassId').value)})});
+    state.project.class_names = result.class_names; state.project.class_ids = result.class_ids; state.activeClass = result.class_id; renderClasses(); input.value = ''; $('newClassId').value = '';
     message(`已新增类别 ${result.class_id}: ${name}`);
   } catch (e) { message(e.message); }
 };
@@ -277,7 +296,7 @@ $('import').onclick = async () => {
 };
 function setPredictionBusy(busy) {
   state.predictBusy = busy;
-  ['trainedModel','trainingTab','browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  ['renameProject','downloadImage','manageModels','currentClassId','applyClassId','trainedModel','trainingTab','browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
   if (!busy) { prepareCrop(); renderCurrentClass(); }
 }
 function showPredictionProgress(job) {
@@ -329,7 +348,7 @@ async function completeCurrentImage() {
   finally { state.enterBusy = false; }
 }
 document.addEventListener('keydown', event => {
-  if (state.activeTab === 'training' || $('labelEditor').open || $('serverBrowser').open) return;
+  if (state.activeTab === 'training' || $('labelEditor').open || $('serverBrowser').open || $('modelsDialog').open) return;
   const target = event.target;
   if (state.drawing) { if (event.key === 'Escape') { event.preventDefault(); state.cancelDrawing?.(); } return; }
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
@@ -387,7 +406,7 @@ async function browseServer(path = '') {
 $('browseServer').onclick = async () => {
   if (state.predictBusy || state.enterBusy || state.drawing) return;
   try { await saveCurrentImage(); } catch(e) { message(e.message); return; }
-  $('serverClasses').value = state.project?.class_names.join(',') || 'object';
+  $('serverClasses').value = state.project?.class_names.map((n,i) => `${projectClassIds()[i]}: ${n}`).join(',') || 'object';
   $('serverBrowser').showModal(); await browseServer();
 };
 $('serverGo').onclick = () => browseServer($('serverPath').value.trim());
@@ -401,7 +420,7 @@ $('serverImport').onclick = async () => {
   const controls = [...$('serverBrowser').querySelectorAll('button,input')]; controls.forEach(el => el.disabled = true);
   $('serverImportProgress').hidden = false;
   try {
-    const result = await api('/api/server/directories/import', {method:'POST', ...jsonOptions({path:serverSelectedPath,name:$('serverProjectName').value.trim(),class_names:$('serverClasses').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),recursive:$('serverRecursive').checked})});
+    const result = await api('/api/server/directories/import', {method:'POST', ...jsonOptions({path:serverSelectedPath,name:$('serverProjectName').value.trim(),...parseClassSpec($('serverClasses').value),recursive:$('serverRecursive').checked})});
     await loadProjects(); $('projectSelect').value = result.project_id; await selectProject(result.project_id);
     $('serverBrowser').close(); message(`服务器目录已导入新项目：${result.count} 张图片`);
   } catch(e) { $('serverError').textContent = typeof e.message === 'string' ? e.message : '导入失败'; }
@@ -507,3 +526,49 @@ async function initializeTraining() {
   trainingPoll = setInterval(() => { if (state.project && (state.activeTab === 'training' || trainingRuns.some(r => ['preparing','running'].includes(r.status)))) refreshTraining().catch(e => { $('trainingError').textContent = e.message; }); },2000);
 }
 initializeTraining().catch(e => message(e.message));
+
+$('renameProject').onclick = async () => {
+  if (!state.project || state.predictBusy || state.drawing) return;
+  const name = prompt('新的项目名称',state.project.name); if (!name?.trim()) return;
+  try { await saveCurrentImage(); const id=state.project.id; await api(`/api/projects/${id}/name`,{method:'PUT',...jsonOptions({name:name.trim()})}); await loadProjects(); await selectProject(id); message('项目已改名'); } catch(e) { message(e.message); }
+};
+$('downloadImage').onclick = () => {
+  if (!state.current || !state.project) { message('请先选择图片'); return; }
+  const anchor = document.createElement('a'); anchor.href = `/api/projects/${state.project.id}/images/${state.current}/download`;
+  anchor.download = ''; document.body.append(anchor); anchor.click(); anchor.remove();
+};
+let modelsBusy = false;
+async function refreshManagedModels() {
+  const data = await api('/api/models');
+  $('managedModels').replaceChildren(...data.models.map(model => {
+    const row = document.createElement('div'); row.className = 'managed-model';
+    const title = document.createElement('strong'); title.textContent = `${model.name}${model.default ? '（默认）':''} · ${(model.bytes/1048576).toFixed(1)} MB`;
+    const path = document.createElement('p'); path.textContent = model.path;
+    const actions = document.createElement('div');
+    const use = document.createElement('button'); use.textContent = '用于当前打标';
+    use.disabled = Boolean(model.class_names && JSON.stringify(model.class_names)!==JSON.stringify(state.project?.class_names));
+    use.onclick = () => { $('model').value = model.path; state.selectedModelImageSize = model.imgsz; $('trainedModel').value = model.run_id || ''; $('modelsDialog').close(); message(`已选择模型 ${model.name}`); };
+    const makeDefault = document.createElement('button'); makeDefault.textContent = '设为默认'; makeDefault.disabled = model.default;
+    makeDefault.onclick = async () => { if (modelsBusy) return; modelsBusy = true; try { const result = await api(`/api/models/${model.id}/default`,{method:'PUT'}); state.defaultModelPath = result.default_model_path; state.defaultImageSize = result.default_image_size; await refreshManagedModels(); } catch(e) { $('modelManagerError').textContent=e.message; } finally { modelsBusy=false; } };
+    const remove = document.createElement('button'); remove.textContent = '删除模型'; remove.disabled = Boolean(model.delete_blocked); remove.title = model.delete_blocked || '删除权重，保留训练记录及数据';
+    remove.onclick = async () => {
+      if (modelsBusy || !confirm(`删除模型“${model.name}”？${model.kind==='training'?'将删除 best.pt 和 last.pt。':''}图片、标签及训练日志会保留。`)) return;
+      modelsBusy=true; $('modelManagerError').textContent='';
+      try {
+        await api(`/api/models/${model.id}`,{method:'DELETE'});
+        const config=await api('/api/config'); state.defaultModelPath=config.default_model_path;
+        if ($('model').value===model.path) { $('model').value=config.default_model_path; state.selectedModelImageSize=null; $('trainedModel').value=''; try { localStorage.removeItem(`ai-label-local.model.${state.project.id}`); } catch (_) {} }
+        if ($('trainModel').value===model.path) $('trainModel').value=config.default_model_path;
+        await refreshTraining(); await refreshManagedModels(); message('模型权重已删除');
+      } catch(e) { $('modelManagerError').textContent=e.message; }
+      finally { modelsBusy=false; }
+    };
+    actions.append(use,makeDefault,remove); row.append(title,path,actions);
+    if (model.delete_blocked) { const reason=document.createElement('p'); reason.className='hint'; reason.textContent=model.delete_blocked; row.append(reason); }
+    return row;
+  }));
+  if (!data.models.length) $('managedModels').textContent='暂无可管理模型';
+}
+$('manageModels').onclick = async () => { $('modelsDialog').showModal(); $('modelManagerError').textContent=''; try { await refreshManagedModels(); } catch(e) { $('modelManagerError').textContent=e.message; } };
+$('closeModels').onclick = () => { if (!modelsBusy) $('modelsDialog').close(); };
+$('modelsDialog').addEventListener('cancel', e => { if (modelsBusy) e.preventDefault(); });

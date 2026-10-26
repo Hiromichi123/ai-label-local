@@ -16,8 +16,9 @@ from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, Ex
 from .storage import Storage
 from .schemas import ServerDirectoryImport
 from .server_directories import roots, resolve_directory, image_files
-from .labels import parse_yolo, load_label
-from .schemas import LabelTextUpdate, TrainingRequest
+from .labels import parse_yolo, load_label, class_ids
+from .schemas import LabelTextUpdate, TrainingRequest, ProjectRename
+from . import model_management
 from .training import TrainingManager, training_summary
 
 
@@ -32,7 +33,7 @@ def error(status: int, message: str):
 
 @router.get("/config")
 def config():
-    return {"default_model_path": os.environ.get("YOLO_LABEL_DEFAULT_MODEL", ""), "default_image_size": int(os.environ.get("YOLO_LABEL_DEFAULT_IMAGE_SIZE", "640"))}
+    return model_management.settings(storage)
 
 
 @router.get("/projects")
@@ -59,7 +60,7 @@ def project(project_id: str):
 @router.post("/projects/{project_id}/classes")
 def add_class(project_id: str, request: ClassCreate):
     try:
-        return storage.add_class(project_id, request.name)
+        return storage.add_class(project_id, request.name, request.class_id)
     except FileNotFoundError:
         error(404, "project not found")
     except ValueError as exc:
@@ -69,7 +70,7 @@ def add_class(project_id: str, request: ClassCreate):
 @router.put("/projects/{project_id}/classes/{class_id}")
 def rename_class(project_id: str, class_id: int, request: ClassRename):
     try:
-        return storage.rename_class(project_id, class_id, request.name)
+        return storage.rename_class(project_id, class_id, request.name, request.class_id)
     except FileNotFoundError:
         error(404, "project not found")
     except IndexError as exc:
@@ -177,7 +178,7 @@ def label_file(project_id: str, image_id: str):
 def update_label_file(project_id: str, image_id: str, request: LabelTextUpdate):
     try:
         record = storage.image_record(project_id, image_id)
-        boxes = parse_yolo(request.text, record["width"], record["height"], len(storage.project(project_id)["class_names"]))
+        boxes = parse_yolo(request.text, record["width"], record["height"], class_ids(storage.project(project_id)))
         # Text edits must not silently clip a box beyond the image boundary.
         for number, line in enumerate(request.text.splitlines(), 1):
             if not line.strip():
@@ -211,7 +212,7 @@ def predict(project_id: str, request: PredictRequest):
                        (record.get("status") in {"predicted", "needs_review", "invalid"} or not storage.annotations(project_id, iid)["boxes"])))]
         if not image_ids:
             error(409, "没有可标注的未完成图片；已确认的标注保留，待裁剪图片需先裁剪")
-    model_path = Path(request.model_path or os.environ.get("YOLO_LABEL_DEFAULT_MODEL", "")).expanduser().resolve()
+    model_path = Path(request.model_path or model_management.settings(storage)["default_model_path"]).expanduser().resolve()
     if model_path.suffix.lower() not in MODEL_EXTENSIONS or not model_path.is_file():
         error(400, "model_path must point to an existing .pt or .onnx file")
     try:
@@ -225,25 +226,28 @@ def predict(project_id: str, request: PredictRequest):
         detections = detector.predict(image, request.confidence, request.iou, request.image_size)
         from .labels import serialize
         from .schemas import Box
-        boxes = [Box(class_id=d.class_id, x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if d.x2 > d.x1 and d.y2 > d.y1]
+        boxes = [Box(class_id=class_ids(project)[d.class_id], x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if 0 <= d.class_id < len(project["class_names"]) and d.x2 > d.x1 and d.y2 > d.y1]
         # Never overwrite changes made while inference was running.
-        project_now = storage.project(project_id)
-        record_now = project_now["images"][image_id]
-        if record_now.get("version", 0) != record.get("version", 0):
-            raise RuntimeError(f"{record['filename']} 在预测期间已修改，未覆盖")
-        label = storage._project_path(project_id) / "labels" / f"{image_id}.txt"
-        before = label.read_bytes()
-        backup = storage._project_path(project_id) / "prediction_backups" / uuid.uuid4().hex
-        backup.mkdir(parents=True)
-        (backup / (image_id + ".txt")).write_bytes(before)
-        (backup / "image.json").write_text(json.dumps(record_now, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
-            label.write_text(serialize(boxes, record["width"], record["height"]), encoding="utf-8")
-            record_now.update({"box_count": len(boxes), "status": "predicted", "version": record_now.get("version", 0) + 1})
-            storage._write_json(storage._project_path(project_id) / "project.json", project_now)
-        except Exception:
-            label.write_bytes(before)
-            raise
+        with storage.lock:
+            project_now = storage.project(project_id)
+            if class_ids(project_now) != class_ids(project):
+                raise RuntimeError("预测期间类别编号发生变化，未覆盖标注")
+            record_now = project_now["images"][image_id]
+            if record_now.get("version", 0) != record.get("version", 0):
+                raise RuntimeError(f"{record['filename']} 在预测期间已修改，未覆盖")
+            label = storage._project_path(project_id) / "labels" / f"{image_id}.txt"
+            before = label.read_bytes()
+            backup = storage._project_path(project_id) / "prediction_backups" / uuid.uuid4().hex
+            backup.mkdir(parents=True)
+            (backup / (image_id + ".txt")).write_bytes(before)
+            (backup / "image.json").write_text(json.dumps(record_now, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                label.write_text(serialize(boxes, record["width"], record["height"]), encoding="utf-8")
+                record_now.update({"box_count": len(boxes), "status": "predicted", "version": record_now.get("version", 0) + 1})
+                storage._write_json(storage._project_path(project_id) / "project.json", project_now)
+            except Exception:
+                label.write_bytes(before)
+                raise
 
     return manager.submit("predict", image_ids, process).view()
 
@@ -286,9 +290,14 @@ def export_dataset(project_id: str, request: ExportRequest):
     for split, split_records in splits.items():
         for record in split_records:
             shutil.copy2(storage.image_path(project_id, record["id"]), output / "images" / split / f"{record['id']}.jpg")
-            shutil.copy2(storage._project_path(project_id) / "labels" / f"{record['id']}.txt", output / "labels" / split / f"{record['id']}.txt")
+            from .labels import serialize
+            boxes = load_label(storage._project_path(project_id)/"labels"/f"{record['id']}.txt", record['width'], record['height'], class_ids(project))
+            dense = {value:index for index,value in enumerate(class_ids(project))}
+            boxes = [b.model_copy(update={'class_id':dense[b.class_id]}) for b in boxes]
+            (output/"labels"/split/f"{record['id']}.txt").write_text(serialize(boxes,record['width'],record['height']),encoding='utf-8')
             manifest.append({"id": record["id"], "source": record["filename"], "split": split})
     (output / "dataset.yaml").write_text("path: .\ntrain: images/train\nval: images/val\ntest: images/test\nnames: " + json.dumps(project["class_names"], ensure_ascii=False) + "\n", encoding="utf-8")
+    (output / "class_mapping.json").write_text(json.dumps({"class_ids":class_ids(project),"class_names":project["class_names"]},ensure_ascii=False),encoding="utf-8")
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"path": str(output), "counts": {split: len(items) for split, items in splits.items()}, "manifest": len(manifest)}
 
@@ -341,7 +350,7 @@ def import_server_directory(request: ServerDirectoryImport):
                     image.load()
                 label = source.with_suffix(".txt")
                 if label.is_file():
-                    load_label(label, width, height, len(request.class_names))
+                    load_label(label, width, height, request.class_ids if request.class_ids is not None else len(request.class_names))
             except (OSError, ValueError) as exc:
                 raise ValueError(f"{source.name}: {exc}") from exc
         project = storage.create_project(request)
@@ -384,6 +393,8 @@ def training_runs(project_id: str):
 @router.post("/projects/{project_id}/training")
 def start_training(project_id: str, request: TrainingRequest):
     try:
+        if not request.model_path:
+            request = request.model_copy(update={"model_path":model_management.settings(storage)["default_model_path"]})
         return training.start(storage, project_id, request)
     except FileNotFoundError as exc:
         error(404, str(exc))
@@ -407,3 +418,46 @@ def stop_training(project_id: str, run_id: str):
         return training.stop(storage, project_id, run_id)
     except (FileNotFoundError, ValueError):
         error(404, "training run not found")
+
+
+@router.put("/projects/{project_id}/name")
+def rename_project(project_id: str, request: ProjectRename):
+    try:
+        return storage.rename_project(project_id, request.name)
+    except FileNotFoundError:
+        error(404,"project not found")
+    except ValueError as exc:
+        error(409,str(exc))
+
+
+@router.get("/projects/{project_id}/images/{image_id}/download")
+def download_image(project_id: str, image_id: str):
+    try:
+        record = storage.image_record(project_id,image_id)
+        filename = Path(record['filename'].replace('\\','/')).stem + '.jpg'
+        return FileResponse(storage.image_path(project_id,image_id),media_type='image/jpeg',filename=filename,headers={'Cache-Control':'no-store'})
+    except FileNotFoundError:
+        error(404,'image not found')
+
+
+@router.get("/models")
+def list_models():
+    return model_management.list_models(storage,training)
+
+
+@router.put("/models/{model_id}/default")
+def default_model(model_id: str):
+    try:
+        return model_management.set_default(storage,training,model_id)
+    except FileNotFoundError:
+        error(404,'model not found')
+
+
+@router.delete("/models/{model_id}")
+def delete_model(model_id: str):
+    try:
+        return model_management.delete_model(storage,training,model_id)
+    except FileNotFoundError:
+        error(404,'model not found')
+    except (ValueError,RuntimeError) as exc:
+        error(409,str(exc))

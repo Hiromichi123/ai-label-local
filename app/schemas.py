@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Any, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CropMode(StrEnum):
@@ -14,17 +14,26 @@ class CropMode(StrEnum):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     class_names: list[str] = Field(min_length=1)
+    class_ids: list[int] | None = None
     crop_mode: CropMode = CropMode.manual_crop
+
+    @model_validator(mode="after")
+    def validate_ids(self):
+        if self.class_ids is not None and (len(self.class_ids) != len(self.class_names) or len(set(self.class_ids)) != len(self.class_ids) or any(i < 0 or i > 999999 for i in self.class_ids)):
+            raise ValueError("类别编号必须唯一、非负，且与类别名称一一对应")
+        return self
 
     @field_validator("class_names")
     @classmethod
     def valid_classes(cls, values: list[str]) -> list[str]:
-        if any(not value.strip() for value in values) or len(set(values)) != len(values):
+        values = [value.strip() for value in values]
+        if any(not value for value in values) or len(set(values)) != len(values):
             raise ValueError("class names must be non-empty and unique")
         return [value.strip() for value in values]
 
 
 class ClassCreate(BaseModel):
+    class_id: int | None = Field(default=None, ge=0, le=999999)
     name: str = Field(min_length=1, max_length=80)
 
     @field_validator("name")
@@ -37,6 +46,7 @@ class ClassCreate(BaseModel):
 
 
 class ClassRename(BaseModel):
+    class_id: int | None = Field(default=None, ge=0, le=999999)
     name: str = Field(min_length=1, max_length=80)
 
     @field_validator("name")
@@ -146,3 +156,7 @@ class TrainingRequest(BaseModel):
         if value % 32:
             raise ValueError("训练分辨率必须是 32 的倍数")
         return value
+
+
+class ProjectRename(BaseModel):
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")

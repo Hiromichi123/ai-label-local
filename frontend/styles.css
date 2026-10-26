@@ -52,3 +52,11 @@ input, select { width: 100%; margin: 3px 0 7px; } label { display: block; color:
 #trainingProgress { width: 100%; height: 20px; }
 #trainingLog { min-height: 180px; max-height: 460px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b111b; padding: 12px; font: 12px/1.5 monospace; }
 #trainingError { color: #ff9898; }
+
+.class-row { display: grid; grid-template-columns: 76px minmax(0,1fr) auto; }
+#currentClassId { width: 85px; display: inline-block; }
+#modelsDialog { width: min(920px,92vw); max-height: 90vh; overflow: auto; background: #18232e; color: #e8eef7; border: 1px solid #526479; border-radius: 10px; }
+#modelsDialog::backdrop { background: #0009; }
+.managed-model { padding: 14px 0; border-bottom: 1px solid #3d5875; }
+.managed-model p { overflow-wrap: anywhere; }
+#modelManagerError { color: #ff9898; }

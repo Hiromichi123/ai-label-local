@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
-from .labels import load_label, serialize
+from .labels import load_label, serialize, class_ids
 
 ACTIVE = {'preparing', 'running', 'stopping'}
 
@@ -48,7 +48,7 @@ def eligible_records(project):
 def training_summary(storage, project_id):
     project = storage.project(project_id)
     records = eligible_records(project)
-    return {'total': len(project['images']), 'reviewed': len(records), 'excluded': len(project['images'])-len(records), 'class_names': project['class_names']}
+    return {'total': len(project['images']), 'reviewed': len(records), 'excluded': len(project['images'])-len(records), 'class_names': project['class_names'], 'class_ids': class_ids(project)}
 
 
 def snapshot(storage, project_id, target, params, cancelled=lambda: False):
@@ -74,7 +74,9 @@ def snapshot(storage, project_id, target, params, cancelled=lambda: False):
             if not label.is_file():
                 raise ValueError(f"{record['filename']}: 标签文件缺失")
             before_image, before_label = source.stat(), label.stat()
-            boxes = load_label(label, record['width'], record['height'], len(project['class_names']))
+            boxes = load_label(label, record['width'], record['height'], class_ids(project))
+            dense = {value:index for index,value in enumerate(class_ids(project))}
+            boxes = [box.model_copy(update={'class_id':dense[box.class_id]}) for box in boxes]
             positive += len(boxes)
             if split == 'train':
                 train_positive += len(boxes)
@@ -94,6 +96,7 @@ def snapshot(storage, project_id, target, params, cancelled=lambda: False):
     # JSON is valid YAML and preserves Unicode class names and absolute paths.
     write_json(target/'dataset.yaml', {'path': str(target.resolve()), 'train': 'images/train', 'val': 'images/val', 'names': project['class_names']})
     write_json(target/'manifest.json', manifest)
+    write_json(target/'class_mapping.json', {'class_ids':class_ids(project),'class_names':project['class_names']})
     return {k: len(v) for k, v in splits.items()}
 
 
@@ -126,7 +129,7 @@ class TrainingManager:
         progress = read_json(path/'progress.json', {})
         record.update({k: v for k, v in progress.items() if k in {'epoch', 'metrics'}})
         record['epoch'] = min(record.get('epoch', 0), record.get('params', {}).get('epochs', record.get('epoch', 0)))
-        record['model_available'] = record.get('status') == 'completed' and Path(record.get('model_path', '')).is_file()
+        record['model_available'] = record.get('status') == 'completed' and not record.get('model_deleted') and Path(record.get('model_path', '')).is_file()
         if logs:
             try:
                 with (path/'train.log').open('rb') as stream:
@@ -162,7 +165,7 @@ class TrainingManager:
             path.mkdir(parents=True)
             params = request.model_dump()
             params['model_path'] = str(model)
-            record = {'id': run_id, 'project_id': project_id, 'name': request.name, 'created_at': datetime.now(timezone.utc).isoformat(), 'status': 'preparing', 'epoch': 0, 'metrics': {}, 'params': params, 'class_names': project['class_names']}
+            record = {'id': run_id, 'project_id': project_id, 'name': request.name, 'created_at': datetime.now(timezone.utc).isoformat(), 'status': 'preparing', 'epoch': 0, 'metrics': {}, 'params': params, 'class_names': project['class_names'], 'class_ids': class_ids(project)}
             write_json(path/'run.json', record)
             self.active = run_id
             self.cancel.clear()
