@@ -83,6 +83,7 @@ function renderImages() {
   }));
 }
 async function saveCurrentImage(force = false) {
+  if (state.drawing) throw new Error('请先完成当前框的绘制');
   if (!state.current || !state.project || state.crop) return true;
   if (!force && state.history.length === 0) return true;
   const result = await api(`/api/projects/${state.project.id}/images/${state.current}/annotations`, {
@@ -95,7 +96,7 @@ async function saveCurrentImage(force = false) {
   return true;
 }
 async function selectImage(id, saveBefore = true) {
-  if ((state.predictBusy || state.enterBusy) && saveBefore) return;
+  if (state.drawing || ((state.predictBusy || state.enterBusy) && saveBefore)) return;
   if (state.current === id) return;
   if (saveBefore && state.current) {
     try { await saveCurrentImage(); } catch (error) { message(`自动保存失败：${error.message}`); return; }
@@ -140,6 +141,7 @@ async function draw() {
   const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
   if (state.crop) { drawCrop(ctx, canvas); return; }
   state.annotations.forEach((box, index) => { ctx.strokeStyle = index === state.selected ? '#ffdf5d' : '#4cff91'; ctx.lineWidth = Math.max(2, canvas.width / 400); ctx.strokeRect(box.x1, box.y1, box.x2-box.x1, box.y2-box.y1); ctx.fillStyle = ctx.strokeStyle; ctx.font = `${Math.max(14, canvas.width / 45)}px sans-serif`; ctx.fillText(`${box.class_id}${box.confidence == null ? '' : ` ${(box.confidence * 100).toFixed(0)}%`}`, box.x1 + 3, Math.max(16, box.y1 - 4)); });
+  if (state.drawing) { const b = state.drawing; ctx.save(); ctx.strokeStyle = '#ffdf5d'; ctx.lineWidth = Math.max(2,canvas.width/400); ctx.setLineDash([10,6]); ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1); ctx.restore(); }
   if (state.crosshair) {
     ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(3, canvas.width / 260); ctx.setLineDash([Math.max(10, canvas.width / 90), Math.max(8, canvas.width / 110)]);
     ctx.beginPath(); ctx.moveTo(state.crosshair.x, 0); ctx.lineTo(state.crosshair.x, canvas.height); ctx.moveTo(0, state.crosshair.y); ctx.lineTo(canvas.width, state.crosshair.y); ctx.stroke(); ctx.restore();
@@ -155,14 +157,48 @@ $('canvas').addEventListener('pointermove', event => {
 });
 $('canvas').addEventListener('pointerleave', () => { state.crosshair = null; draw(); });
 $('canvas').addEventListener('pointerdown', event => {
-  if (!state.current || state.predictBusy || state.enterBusy || event.button !== 0) return;
-  if (state.crop) { dragCrop(event); return; }
+  if (!state.current || state.predictBusy || state.enterBusy || state.drawing) return;
+  if (state.crop) { if (event.button === 0) dragCrop(event); return; }
+  if (![0,2].includes(event.button)) return;
+  event.preventDefault(); $('canvas').focus({preventScroll:true});
   const p = canvasPoint(event);
-  state.selected = state.annotations.findLastIndex(b => p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2);
+  if (event.button === 2) {
+    state.selected = state.annotations.findLastIndex(b => p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2);
+    renderBoxList(); draw(); return;
+  }
+  const canvas = $('canvas'), imageId = state.current, projectId = state.project.id;
+  const box = {class_id:Number($('currentClass').value) || 0, x1:p.x,y1:p.y,x2:p.x,y2:p.y,source:'human',status:'edited'};
+  state.drawing = box; state.selected = -1;
+  const move = e => {
+    if (e.pointerId !== event.pointerId) return;
+    const q = canvasPoint(e);
+    box.x1 = Math.max(0,Math.min(canvas.width,p.x,q.x)); box.x2 = Math.max(0,Math.min(canvas.width,Math.max(p.x,q.x)));
+    box.y1 = Math.max(0,Math.min(canvas.height,p.y,q.y)); box.y2 = Math.max(0,Math.min(canvas.height,Math.max(p.y,q.y)));
+    draw();
+  };
+  const finish = (e, cancelled = false) => {
+    if (e && e.pointerId !== event.pointerId) return;
+    if (!cancelled && e) move(e);
+    window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); window.removeEventListener('pointercancel',cancel);
+    window.removeEventListener('blur',cancel); canvas.removeEventListener('lostpointercapture',cancel);
+    state.drawing = null; state.cancelDrawing = null;
+    if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    if (!cancelled && state.current === imageId && state.project.id === projectId && box.x2-box.x1 >= 2 && box.y2-box.y1 >= 2) {
+      snapshot(); state.annotations.push(box); state.selected = state.annotations.length-1;
+      $('saveStatus').textContent = '有未保存修改';
+    }
+    renderBoxList(); draw();
+  };
+  const up = e => finish(e);
+  const cancel = e => finish(e?.pointerId == null ? null : e,true);
+  state.cancelDrawing = () => finish(null,true);
+  window.addEventListener('pointermove',move); window.addEventListener('pointerup',up); window.addEventListener('pointercancel',cancel);
+  window.addEventListener('blur',cancel); canvas.addEventListener('lostpointercapture',cancel);
+  canvas.setPointerCapture?.(event.pointerId);
   renderBoxList(); draw();
 });
 $('editLabelFile').onclick = async () => {
-  if (!state.current || state.crop || state.predictBusy || state.enterBusy) return;
+  if (!state.current || state.crop || state.predictBusy || state.enterBusy || state.drawing) return;
   state.enterBusy = true;
   try {
     await saveCurrentImage();
@@ -191,7 +227,12 @@ const confidenceKey = 'ai-label-local.confidence';
 try { const value = localStorage.getItem(confidenceKey); if (value !== null && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1) $('confidence').value = value; } catch (_) {}
 function updateConfidence() { $('confidenceValue').textContent = Number($('confidence').value).toFixed(2); try { localStorage.setItem(confidenceKey, $('confidence').value); } catch (_) {} }
 $('confidence').oninput = updateConfidence; updateConfidence();
-$('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
+function deleteSelectedBox() {
+  if (!state.current || state.crop || state.predictBusy || state.enterBusy || state.drawing || state.selected < 0 || state.selected >= state.annotations.length) return;
+  snapshot(); state.annotations.splice(state.selected,1); state.selected = -1;
+  $('saveStatus').textContent = '有未保存修改'; renderBoxList(); renderCurrentClass(); draw();
+}
+$('deleteBox').onclick = deleteSelectedBox;
 $('currentClass').onchange = event => applyCurrentClass(event.target.value);
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
 $('save').onclick = async () => { try { await saveCurrentImage(true); await checkSaveStatus(); message('标注已保存'); } catch (e) { message(e.message); } };
@@ -233,7 +274,7 @@ function showPredictionProgress(job) {
   $('job').textContent = `${names[job.status] || job.status} · ${completed}/${total} 张 · ${percent}%${errors.length ? `\n失败 ${errors.length} 张：${errors[0]}` : ''}`;
 }
 async function runPrediction(scope) {
-  if (!state.project || state.predictBusy) return;
+  if (!state.project || state.predictBusy || state.drawing) return;
   if (scope === 'current' && (!state.current || state.crop)) { message('请先选择图片并确认裁剪'); return; }
   const projectId = state.project.id, imageId = state.current;
   try {
@@ -259,7 +300,7 @@ $('predictCurrent').onclick = () => runPrediction('current');
 $('predict').onclick = () => runPrediction('unfinished');
 $('export').onclick = async () => { if (!state.project) return; try { await saveCurrentImage(); const result = await api(`/api/projects/${state.project.id}/export`, {method:'POST', ...jsonOptions({})}); message(`导出完成：${result.counts.train}/${result.counts.val}/${result.counts.test}`); } catch(e) { message(e.message); } };
 async function completeCurrentImage() {
-  if (!state.current || state.crop || state.predictBusy || state.enterBusy) return;
+  if (!state.current || state.crop || state.predictBusy || state.enterBusy || state.drawing) return;
   state.enterBusy = true;
   try {
     await saveCurrentImage(true); await checkSaveStatus();
@@ -274,10 +315,12 @@ async function completeCurrentImage() {
 document.addEventListener('keydown', event => {
   if (state.activeTab === 'training' || $('labelEditor').open || $('serverBrowser').open) return;
   const target = event.target;
+  if (state.drawing) { if (event.key === 'Escape') { event.preventDefault(); state.cancelDrawing?.(); } return; }
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
+  if (event.key === 'Delete' && !typing && !event.isComposing && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); deleteSelectedBox(); return; }
   if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
     event.preventDefault();
-    if (state.predictBusy || state.enterBusy) return;
+    if (state.predictBusy || state.enterBusy || state.drawing) return;
     if (state.crop) { if (!$('confirmCrop').disabled) $('confirmCrop').click(); }
     else { completeCurrentImage(); }
     return;
@@ -323,7 +366,7 @@ async function browseServer(path = '') {
   } catch(e) { $('serverError').textContent = e.message; $('serverImport').disabled = true; }
 }
 $('browseServer').onclick = async () => {
-  if (state.predictBusy || state.enterBusy) return;
+  if (state.predictBusy || state.enterBusy || state.drawing) return;
   try { await saveCurrentImage(); } catch(e) { message(e.message); return; }
   $('serverClasses').value = state.project?.class_names.join(',') || 'object';
   $('serverBrowser').showModal(); await browseServer();
@@ -348,7 +391,7 @@ $('serverImport').onclick = async () => {
 let trainingRuns = [], selectedTrainingRun = '', trainingPoll = null, trainingRefreshing = false, trainingRefreshPending = false;
 const trainingNames = {preparing:'准备数据快照',running:'正在训练',completed:'训练完成',failed:'训练失败',cancelled:'已停止',stopping:'正在停止'};
 async function showPage(tab) {
-  if (state.predictBusy || state.enterBusy) return;
+  if (state.predictBusy || state.enterBusy || state.drawing) return;
   try { await saveCurrentImage(); } catch(e) { message(e.message); return; }
   state.activeTab = tab;
   $('annotationPage').hidden = tab === 'training'; $('trainingPage').hidden = tab !== 'training';
