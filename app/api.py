@@ -16,7 +16,7 @@ from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, Ex
 from .storage import Storage
 from .schemas import ServerDirectoryImport
 from .server_directories import roots, resolve_directory, image_files
-from .labels import parse_yolo, load_label, class_ids
+from .labels import parse_yolo, load_label, class_ids, validate_label_text
 from .schemas import LabelTextUpdate, TrainingRequest, ProjectRename
 from . import model_management
 from .training import TrainingManager, training_summary
@@ -174,18 +174,24 @@ def label_file(project_id: str, image_id: str):
         error(404, "image not found")
 
 
+@router.post("/projects/{project_id}/images/{image_id}/label-file/validate")
+def validate_label_file(project_id: str, image_id: str, request: LabelTextUpdate):
+    try:
+        record = storage.image_record(project_id,image_id)
+        _, errors = validate_label_text(request.text,record['width'],record['height'],class_ids(storage.project(project_id)))
+        return {'valid':not errors,'errors':errors}
+    except FileNotFoundError:
+        error(404,'image not found')
+
+
 @router.put("/projects/{project_id}/images/{image_id}/label-file")
 def update_label_file(project_id: str, image_id: str, request: LabelTextUpdate):
     try:
         record = storage.image_record(project_id, image_id)
-        boxes = parse_yolo(request.text, record["width"], record["height"], class_ids(storage.project(project_id)))
-        # Text edits must not silently clip a box beyond the image boundary.
-        for number, line in enumerate(request.text.splitlines(), 1):
-            if not line.strip():
-                continue
-            _, cx, cy, bw, bh = map(float, line.split())
-            if cx-bw/2 < -1e-6 or cy-bh/2 < -1e-6 or cx+bw/2 > 1+1e-6 or cy+bh/2 > 1+1e-6:
-                raise ValueError(f"line {number}: box extends beyond image")
+        boxes, errors = validate_label_text(request.text, record['width'], record['height'], class_ids(storage.project(project_id)))
+        if errors:
+            first = errors[0]
+            raise HTTPException(status_code=422,detail={'code':'invalid_labels','message':f"第 {first['line']} 行：{first['message']}",'errors':errors})
         return storage.save_annotations(project_id, image_id, request.version, boxes)
     except FileNotFoundError:
         error(404, "image not found")

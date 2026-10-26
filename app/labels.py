@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from .schemas import Box
 
 
@@ -46,3 +47,45 @@ def load_label(path: Path, width: int, height: int, class_count: int | list[int]
 
 def class_ids(project: dict) -> list[int]:
     return project.get("class_ids", list(range(len(project["class_names"]))))
+
+
+def validate_label_text(text: str, width: int, height: int, allowed: list[int]):
+    errors = []
+    boxes = []
+    for number, line in enumerate(text.split('\n'), 1):
+        if not line.strip():
+            continue
+        fields = line.split()
+        message = None
+        if len(fields) != 5:
+            message = '每行应有 5 列：类别编号 中心X 中心Y 宽 高'
+        else:
+            try:
+                value = int(fields[0])
+            except ValueError:
+                message = '类别编号必须为整数'
+            else:
+                if value not in allowed:
+                    message = f'类别编号 {value} 未在当前项目定义'
+            if message is None:
+                try:
+                    cx, cy, bw, bh = map(float, fields[1:])
+                except ValueError:
+                    message = '坐标必须为数字'
+                else:
+                    if not all(math.isfinite(v) for v in (cx,cy,bw,bh)):
+                        message = '坐标必须为有限数字，不能是 NaN 或 Infinity'
+                    elif not 0 <= cx <= 1 or not 0 <= cy <= 1:
+                        message = '中心坐标必须在 0–1 之间'
+                    elif not 0 < bw <= 1 or not 0 < bh <= 1:
+                        message = '宽和高必须大于 0 且不超过 1'
+                    elif cx-bw/2 < -1e-6 or cy-bh/2 < -1e-6 or cx+bw/2 > 1+1e-6 or cy+bh/2 > 1+1e-6:
+                        message = '标注框超出图片边界'
+        if message is None:
+            try:
+                boxes.extend(parse_yolo(line,width,height,allowed))
+            except ValueError:
+                message = '标注框坐标无效'
+        if message:
+            errors.append({'line':number,'message':message})
+    return boxes, errors

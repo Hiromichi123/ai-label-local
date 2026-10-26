@@ -240,22 +240,25 @@ $('editLabelFile').onclick = async () => {
     state.labelFileVersion = data.version;
     $('labelFilename').textContent = data.filename;
     $('labelText').value = data.text; $('labelError').textContent = '';
-    $('labelEditor').showModal(); $('labelText').focus();
+    labelLineErrors = []; renderLabelHighlight();
+    $('labelEditor').showModal(); $('labelText').focus(); queueLabelValidation(0);
   } catch (e) { message(e.message); }
   finally { state.enterBusy = false; }
 };
 $('cancelLabelText').onclick = () => $('labelEditor').close();
 $('labelEditor').addEventListener('cancel', e => { if ($('saveLabelText').disabled) e.preventDefault(); });
 $('saveLabelText').onclick = async () => {
-  $('saveLabelText').disabled = true; $('cancelLabelText').disabled = true;
+  $('saveLabelText').disabled = true; $('cancelLabelText').disabled = true; $('labelText').readOnly = true;
   try {
+    const validation = await validateLabelEditor();
+    if (!validation.valid) return;
     const result = await api(`/api/projects/${state.project.id}/images/${state.current}/label-file`, {method:'PUT', ...jsonOptions({version:state.labelFileVersion,text:$('labelText').value})});
     state.version = result.version; state.annotations = result.boxes; state.history = []; state.selected = -1;
     const record = state.project.images[state.current]; record.version = result.version; record.status = 'edited'; record.box_count = result.boxes.length;
     renderImages(); renderBoxList(); await draw(); await checkSaveStatus();
     $('labelEditor').close(); message('标签文件已保存');
   } catch(e) { $('labelError').textContent = e.message; }
-  finally { $('saveLabelText').disabled = false; $('cancelLabelText').disabled = false; }
+  finally { $('saveLabelText').disabled = false; $('cancelLabelText').disabled = false; $('labelText').readOnly = false; }
 };
 const confidenceKey = 'ai-label-local.confidence';
 try { const value = localStorage.getItem(confidenceKey); if (value !== null && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1) $('confidence').value = value; } catch (_) {}
@@ -656,3 +659,34 @@ window.addEventListener('pagehide',() => {
   if (validTrainingPreferences()) fetch(`/api/projects/${id}/training-settings`,{method:'PUT',...jsonOptions(trainingParams(entry.raw)),keepalive:true}).catch(() => {});
 });
 initializeTraining().catch(e => message(e.message));
+
+let labelLineErrors = [], labelValidationTimer = null, labelValidationSequence = 0;
+function renderLabelHighlight() {
+  const errors = new Map(labelLineErrors.map(e => [e.line,e.message]));
+  $('labelHighlight').replaceChildren(...$('labelText').value.split('\n').map((text,i) => {
+    const row=document.createElement('span'); row.className=errors.has(i+1)?'label-code-line invalid-label-line':'label-code-line';
+    row.textContent=text || ' '; if (errors.has(i+1)) row.title=`第 ${i+1} 行：${errors.get(i+1)}`; return row;
+  }));
+  $('labelText').setAttribute('aria-invalid',String(labelLineErrors.length>0));
+  syncLabelScroll();
+}
+function syncLabelScroll() { $('labelHighlight').scrollTop=$('labelText').scrollTop; $('labelHighlight').scrollLeft=$('labelText').scrollLeft; }
+async function validateLabelEditor() {
+  clearTimeout(labelValidationTimer);
+  const sequence=++labelValidationSequence, text=$('labelText').value;
+  const projectId=state.project.id,imageId=state.current;
+  const result=await api(`/api/projects/${projectId}/images/${imageId}/label-file/validate`,{method:'POST',...jsonOptions({version:state.labelFileVersion,text})});
+  if (sequence!==labelValidationSequence || text!==$('labelText').value || projectId!==state.project?.id || imageId!==state.current) return {valid:false};
+  labelLineErrors=result.errors; renderLabelHighlight();
+  $('labelValidationStatus').textContent=result.valid?'标签格式校验通过':`有 ${result.errors.length} 行错误，已标红`;
+  $('labelError').textContent=result.errors.map(e=>`第 ${e.line} 行：${e.message}`).join('\n');
+  return result;
+}
+function queueLabelValidation(delay=180) {
+  clearTimeout(labelValidationTimer); ++labelValidationSequence;
+  $('labelValidationStatus').textContent='正在校验…';
+  labelValidationTimer=setTimeout(()=>validateLabelEditor().catch(e=>{ $('labelValidationStatus').textContent='暂时无法校验'; $('labelError').textContent=e.message; }),delay);
+}
+$('labelText').addEventListener('input',()=>{ labelLineErrors=[]; renderLabelHighlight(); queueLabelValidation(); });
+$('labelText').addEventListener('scroll',syncLabelScroll);
+$('labelEditor').addEventListener('close',()=>{ clearTimeout(labelValidationTimer); ++labelValidationSequence; });

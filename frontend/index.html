@@ -65,7 +65,7 @@
 <dialog id="labelEditor" aria-labelledby="labelEditorTitle">
   <h2 id="labelEditorTitle">编辑标签文件</h2><p id="labelFilename"></p>
   <p class="hint">每行：类别编号 中心X 中心Y 宽 高（坐标归一化到 0–1）；清空表示无目标。保存会更新标签文件和画布。</p>
-  <label for="labelText">YOLO 标签数据</label><textarea id="labelText" spellcheck="false" rows="16"></textarea>
+  <label for="labelText">YOLO 标签数据</label><div class="label-code-editor"><pre id="labelHighlight" aria-hidden="true"></pre><textarea id="labelText" spellcheck="false" rows="16" wrap="off" aria-describedby="labelValidationStatus labelError"></textarea></div><p id="labelValidationStatus" role="status" aria-live="polite"></p>
   <p id="labelError" role="alert"></p><button id="saveLabelText">校验并保存</button><button id="cancelLabelText">取消</button>
 </dialog>
 <script src="/static/app.js"></script>

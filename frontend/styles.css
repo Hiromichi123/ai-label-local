@@ -60,3 +60,12 @@ input, select { width: 100%; margin: 3px 0 7px; } label { display: block; color:
 .managed-model { padding: 14px 0; border-bottom: 1px solid #3d5875; }
 .managed-model p { overflow-wrap: anywhere; }
 #modelManagerError { color: #ff9898; }
+
+.label-code-editor { position: relative; background: #0b111b; border: 1px solid #526479; border-radius: 5px; }
+#labelText, #labelHighlight { margin: 0; padding: 10px; border: 0; border-radius: 0; font: 14px/22px monospace; letter-spacing: normal; tab-size: 4; white-space: pre; overflow-wrap: normal; text-align: left; }
+#labelHighlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: #e8eef7; background: transparent; }
+#labelText { position: relative; display: block; width: 100%; height: 352px; resize: vertical; overflow: auto; background: transparent; color: transparent; -webkit-text-fill-color: transparent; caret-color: #fff; }
+#labelText::selection { background: rgba(65,132,210,.5); }
+.label-code-line { display: block; min-height: 22px; width: max-content; min-width: 100%; }
+.invalid-label-line { color: #ff8585; background: rgba(215,48,48,.25); }
+#labelValidationStatus { color: #a9bdd2; }
