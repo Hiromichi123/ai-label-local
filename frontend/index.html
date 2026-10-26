@@ -8,18 +8,45 @@
 </head>
 <body>
 <header><h1>YOLO 本地标注台</h1><span id="message">创建项目开始</span></header>
-<main>
+<nav class="page-tabs" aria-label="功能页签"><button id="annotationTab" aria-pressed="true">图片打标</button><button id="trainingTab" aria-pressed="false">模型训练</button></nav>
+<main id="annotationPage">
   <aside>
     <section><h2>项目</h2><select id="projectSelect"></select><button id="newProject">新建项目</button></section>
     <section><h2>图片</h2><input id="directory" type="file" webkitdirectory directory multiple accept="image/*,.txt"><button id="import">上传本机目录</button><button id="browseServer">浏览服务器目录并导入</button><div class="hint">必须选择目录；导入会替换当前项目内容；非方形图先确认永久裁剪，再标注。自动匹配同名 .txt。</div><div id="images"></div></section>
     <section><h2>类别</h2><div id="classes"></div><input id="newClass" placeholder="新增类别名称"><button id="addClass">新增类别</button></section>
-    <section><h2>智能打标</h2><input id="model" placeholder="本地 .pt 或 .onnx 路径"><label>置信度 <output id="confidenceValue" for="confidence">0.25</output><input aria-label="智能打标置信度" id="confidence" type="range" value="0.25" min="0" max="1" step="0.01"></label><div class="predict-actions"><button id="predictCurrent">标注当前图片（覆盖已有）</button><button id="predict">标注未完成图片</button></div><div class="hint">未完成包含待审核候选；已确认的标注保留。</div><div class="prediction-progress"><progress id="predictProgress" value="0" max="100" aria-label="智能打标进度"></progress><div id="job" role="status" aria-live="polite">尚未开始</div></div></section>
+    <section><h2>智能打标</h2><label for="trainedModel">已训练模型</label><select id="trainedModel"><option value="">默认或手动指定模型</option></select><input id="model" placeholder="本地 .pt 或 .onnx 路径"><label>置信度 <output id="confidenceValue" for="confidence">0.25</output><input aria-label="智能打标置信度" id="confidence" type="range" value="0.25" min="0" max="1" step="0.01"></label><div class="predict-actions"><button id="predictCurrent">标注当前图片（覆盖已有）</button><button id="predict">标注未完成图片</button></div><div class="hint">未完成包含待审核候选；已确认的标注保留。</div><div class="prediction-progress"><progress id="predictProgress" value="0" max="100" aria-label="智能打标进度"></progress><div id="job" role="status" aria-live="polite">尚未开始</div></div></section>
     <section><h2>导出</h2><button id="export">导出已审核数据集</button></section>
   </aside>
   <section class="workspace"><div class="toolbar"><button id="editLabelFile">编辑标签文件</button><button id="deleteBox">删除选中</button><button id="undo">撤销</button><button id="save">保存标注</button><button id="completeImage">完成审核并下一张（Enter）</button><label class="label-control" for="currentClass">当前标签 <select id="currentClass"></select></label><label class="zoom-control" for="zoomRange">缩放 <input id="zoomRange" type="range" min="25" max="200" step="5" value="35"><span id="zoomValue">35%</span></label><span id="selection">未选中</span><span id="saveStatus" class="save-status">未检查</span></div>
     <div id="cropPanel" class="crop-panel" hidden><strong>第 1 步：选择正方形识别区域</strong><span id="cropInfo"></span><label><span id="cropAxis"></span><input id="cropPosition" type="range" min="0" step="1"></label><button id="confirmCrop">确认并永久裁剪（Enter）→ 开始标注</button><span class="hint">拖动裁剪框或滑块移动。确认会永久重写工作图和标签；原始副本保留。</span></div>
     <div class="workspace-body"><div class="canvas-wrap"><canvas id="canvas"></canvas></div><aside class="box-panel"><h2>当前图片框</h2><div id="boxList" class="box-list"></div></aside></div></section>
 </main>
+<section id="trainingPage" hidden>
+<h2>基于已审核标注训练模型</h2><label for="trainingProject">当前数据集</label><select id="trainingProject"></select>
+<p id="trainingSummary" role="status">选择项目以查看可训练图片</p>
+<p class="hint">仅使用已审核且完成裁剪的图片，包含已确认的无目标图片；待审核候选不参与。训练会保存独立数据快照，训练集与验证集不重叠。</p>
+<form id="trainingForm" class="training-grid">
+<label>模型名称<input id="trainName" value="标注模型" required maxlength="80"></label>
+<label>初始权重（服务器 .pt 路径）<input id="trainModel" required placeholder="现有 YOLO .pt 模型"></label>
+<label>训练设备<select id="trainDevice"><option value="cpu">CPU</option></select></label>
+<label>轮数 Epochs<input id="trainEpochs" type="number" min="1" max="2000" value="100" required></label>
+<label>分辨率（32 的倍数）<input id="trainImgsz" type="number" min="64" max="2048" step="32" value="960" required></label>
+<label>批大小 Batch<input id="trainBatch" type="number" min="1" max="128" value="4" required></label>
+<label>初始学习率<input id="trainLr" type="number" min="0.000001" max="1" step="any" value="0.001" required></label>
+<label>早停耐心（0 为关闭）<input id="trainPatience" type="number" min="0" max="2000" value="30" required></label>
+<label>验证集比例<input id="trainVal" type="number" min="0.01" max="0.99" step="0.01" value="0.2" required></label>
+<label>随机种子<input id="trainSeed" type="number" min="0" max="2147483647" value="42" required></label>
+<label>饱和度增广<input id="trainSaturation" type="number" min="0" max="1" step="0.05" value="0.7" required></label>
+<label>亮度增广<input id="trainBrightness" type="number" min="0" max="1" step="0.05" value="0.4" required></label>
+<label>水平翻转概率<input id="trainFlip" type="number" min="0" max="1" step="0.05" value="0.5" required></label>
+<label>Mosaic 概率<input id="trainMosaic" type="number" min="0" max="1" step="0.05" value="1" required></label>
+<button id="startTraining" type="submit">开始训练</button></form>
+<p id="trainingEnvironment" class="hint"></p><p id="trainingError" role="alert"></p>
+<div class="training-monitor"><h2>训练任务</h2><label for="trainingRun">历史任务</label><select id="trainingRun"></select>
+<progress id="trainingProgress" max="100" value="0" aria-label="训练进度"></progress><p id="trainingStatus" role="status" aria-live="polite">尚无训练任务</p>
+<p id="trainingMetrics"></p><button id="stopTraining" disabled>停止训练</button><button id="useTrainedModel" disabled>在打标页使用此模型</button>
+<label for="trainingLog">实时训练日志（最近 64 KB）</label><pre id="trainingLog" tabindex="0"></pre></div>
+</section>
 <dialog id="serverBrowser" aria-labelledby="serverBrowserTitle">
 <h2 id="serverBrowserTitle">服务器目录浏览与导入</h2>
 <p class="hint">这里显示运行标注服务的主机目录。导入会复制图片和同名标签到新项目；后续标注保存到项目副本。</p>

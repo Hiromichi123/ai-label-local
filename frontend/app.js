@@ -5,26 +5,31 @@ const message = (text) => { $('message').textContent = text; };
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail?.message || body.detail || '请求失败');
+  if (!response.ok) throw new Error(body.detail?.message || (Array.isArray(body.detail) ? body.detail.map(e => `${e.loc?.slice(1).join('.')}: ${e.msg}`).join('；') : body.detail) || '请求失败');
   return body;
 }
 function jsonOptions(value) { return { headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }; }
 async function loadProjects() {
   const config = await api('/api/config');
   if (!$('model').value) $('model').value = config.default_model_path || '';
+  state.defaultModelPath = config.default_model_path || '';
   state.defaultImageSize = config.default_image_size || 640;
   const projects = await api('/api/projects');
   $('projectSelect').replaceChildren(...projects.map(p => { const option = new Option(p.name, p.id); return option; }));
+  $('trainingProject').replaceChildren(...projects.map(p => new Option(p.name, p.id)));
   if (projects.length) await selectProject(projects[0].id);
 }
 async function selectProject(id) {
   if (state.project && state.project.id !== id && state.current) await saveCurrentImage();
+  if (state.project?.id !== id) { trainingRuns = []; selectedTrainingRun = ''; state.trainingModelProject = null; state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; $('trainModel').value = ''; }
   state.current = null; state.crop = null; state.annotations = []; state.selected = -1;
   imageCache.clear();
   state.project = await api(`/api/projects/${id}`);
   state.images = Object.values(state.project.images);
   renderClasses();
   renderImages();
+  $('projectSelect').value = id; $('trainingProject').value = id;
+  refreshTraining().catch(e => { $('trainingError').textContent = e.message; });
   if (state.images.length) await selectImage(state.images[0].id);
   else { prepareCrop(); $('canvas').getContext('2d').clearRect(0,0,$('canvas').width,$('canvas').height); }
 }
@@ -215,7 +220,7 @@ $('import').onclick = async () => {
 };
 function setPredictionBusy(busy) {
   state.predictBusy = busy;
-  ['browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  ['trainedModel','trainingTab','browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
   if (!busy) { prepareCrop(); renderCurrentClass(); }
 }
 function showPredictionProgress(job) {
@@ -234,7 +239,7 @@ async function runPrediction(scope) {
   try {
     if (scope !== 'current') await saveCurrentImage();
     setPredictionBusy(true); $('job').className = ''; $('job').textContent = '正在加载模型…'; $('predictProgress').removeAttribute('value');
-    let job = await api(`/api/projects/${projectId}/predict`, {method:'POST', ...jsonOptions({scope,image_id:imageId,model_path:$('model').value,confidence:Number($('confidence').value),image_size:state.defaultImageSize || 640})});
+    let job = await api(`/api/projects/${projectId}/predict`, {method:'POST', ...jsonOptions({scope,image_id:imageId,model_path:$('model').value,confidence:Number($('confidence').value),image_size:state.selectedModelImageSize || state.defaultImageSize || 640})});
     showPredictionProgress(job);
     while (!['completed','failed','cancelled'].includes(job.status)) {
       await new Promise(resolve => setTimeout(resolve,400));
@@ -267,7 +272,7 @@ async function completeCurrentImage() {
   finally { state.enterBusy = false; }
 }
 document.addEventListener('keydown', event => {
-  if ($('labelEditor').open || $('serverBrowser').open) return;
+  if (state.activeTab === 'training' || $('labelEditor').open || $('serverBrowser').open) return;
   const target = event.target;
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
   if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
@@ -290,7 +295,7 @@ $('zoomRange').oninput = event => {
   $('zoomValue').textContent = `${event.target.value}%`;
   draw();
 };
-loadProjects().catch(e => message(e.message));
+// Initialized after both page controllers are ready.
 
 function prepareCrop() {
  const r=state.images.find(x=>x.id===state.current), side=r?Math.min(r.width,r.height):0;
@@ -340,3 +345,102 @@ $('serverImport').onclick = async () => {
   } catch(e) { $('serverError').textContent = typeof e.message === 'string' ? e.message : '导入失败'; }
   finally { serverImportBusy = false; controls.forEach(el => el.disabled = false); $('serverImportProgress').hidden = true; }
 };
+let trainingRuns = [], selectedTrainingRun = '', trainingPoll = null, trainingRefreshing = false, trainingRefreshPending = false;
+const trainingNames = {preparing:'准备数据快照',running:'正在训练',completed:'训练完成',failed:'训练失败',cancelled:'已停止',stopping:'正在停止'};
+async function showPage(tab) {
+  if (state.predictBusy || state.enterBusy) return;
+  try { await saveCurrentImage(); } catch(e) { message(e.message); return; }
+  state.activeTab = tab;
+  $('annotationPage').hidden = tab === 'training'; $('trainingPage').hidden = tab !== 'training';
+  $('annotationTab').setAttribute('aria-pressed', String(tab !== 'training')); $('trainingTab').setAttribute('aria-pressed', String(tab === 'training'));
+  if (tab === 'training') await refreshTraining();
+}
+$('annotationTab').onclick = () => showPage('annotation');
+$('trainingTab').onclick = () => showPage('training').catch(e => { $('trainingError').textContent = e.message; });
+$('trainingProject').onchange = async e => { try { selectedTrainingRun = ''; await selectProject(e.target.value); } catch(err) { $('trainingError').textContent = err.message; } };
+function compatibleModel(run) { return run.model_available && JSON.stringify(run.class_names) === JSON.stringify(state.project?.class_names); }
+function chooseModel(run) {
+  if (!compatibleModel(run)) { message('模型文件不存在或类别与当前项目不一致'); return; }
+  $('model').value = run.model_path; $('trainedModel').value = run.id; state.selectedModelImageSize = run.params.imgsz;
+  try { localStorage.setItem(`ai-label-local.model.${state.project.id}`,run.id); } catch (_) {}
+  message(`已选择 ${run.name} · 推理分辨率 ${run.params.imgsz}`);
+}
+$('trainedModel').onchange = e => {
+  const run = trainingRuns.find(r => r.id === e.target.value);
+  if (run) chooseModel(run);
+  else { state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; try { localStorage.removeItem(`ai-label-local.model.${state.project.id}`); } catch (_) {} }
+};
+$('model').addEventListener('input', () => { $('trainedModel').value = ''; state.selectedModelImageSize = null; try { localStorage.removeItem(`ai-label-local.model.${state.project?.id}`); } catch (_) {} });
+async function refreshTraining() {
+  if (!state.project) return;
+  if (trainingRefreshing) { trainingRefreshPending = true; return; }
+  trainingRefreshing = true;
+  const projectId = state.project.id;
+  try {
+    const data = await api(`/api/projects/${projectId}/training`);
+    if (state.project?.id !== projectId) return;
+    trainingRuns = data.runs;
+    const summary = data.summary;
+    $('trainingSummary').textContent = `可训练：${summary.reviewed} 张已审核图片 / 共 ${summary.total} 张；排除 ${summary.excluded} 张待审核或待裁剪图片。类别：${summary.class_names.join('、')}`;
+    $('trainedModel').replaceChildren(new Option('默认或手动指定模型',''), ...trainingRuns.filter(compatibleModel).map(r => new Option(`${r.name} · ${r.created_at.slice(0,16).replace('T',' ')} UTC`,r.id)));
+    let remembered;
+    try { remembered = localStorage.getItem(`ai-label-local.model.${projectId}`); } catch (_) {}
+    const current = trainingRuns.find(r => compatibleModel(r) && r.model_path === $('model').value);
+    if (current) $('trainedModel').value = current.id;
+    else if (state.trainingModelProject !== projectId) {
+      state.trainingModelProject = projectId; state.selectedModelImageSize = null;
+      const saved = trainingRuns.find(r => r.id === remembered && compatibleModel(r));
+      if (saved) chooseModel(saved);
+      else $('model').value = state.defaultModelPath || $('model').value;
+    }
+    if (!trainingRuns.some(r => r.id === selectedTrainingRun)) selectedTrainingRun = trainingRuns[0]?.id || '';
+    $('trainingRun').replaceChildren(...trainingRuns.map(r => new Option(`${r.name} · ${trainingNames[r.status] || r.status} · ${r.created_at.slice(0,16)} UTC`,r.id)));
+    $('trainingRun').value = selectedTrainingRun;
+    $('startTraining').disabled = summary.reviewed < 2 || trainingRuns.some(r => ['preparing','running','stopping'].includes(r.status)) || state.trainingAvailable === false;
+    if (!$('trainModel').value) $('trainModel').value = $('model').value;
+    if (selectedTrainingRun) await renderTrainingRun(projectId, selectedTrainingRun);
+    else { $('trainingStatus').textContent = '尚无训练任务'; $('trainingLog').textContent = ''; $('trainingProgress').value = 0; $('trainingMetrics').textContent = ''; $('stopTraining').disabled = true; $('useTrainedModel').disabled = true; }
+  } finally { trainingRefreshing = false; if (trainingRefreshPending) { trainingRefreshPending = false; refreshTraining().catch(e => { $('trainingError').textContent = e.message; }); } }
+}
+async function renderTrainingRun(projectId, runId) {
+  const run = await api(`/api/projects/${projectId}/training/${runId}`);
+  if (state.project?.id !== projectId || selectedTrainingRun !== runId) return;
+  const total = run.params.epochs, epoch = run.epoch || 0;
+  $('trainingProgress').value = run.status === 'completed' ? 100 : Math.min(100,epoch/total*100);
+  const count = run.counts ? ` · 训练 ${run.counts.train} 张 / 验证 ${run.counts.val} 张` : '';
+  $('trainingStatus').textContent = `${trainingNames[run.status] || run.status} · ${epoch}/${total} 轮${count}${run.error ? ` · ${run.error}` : ''}${run.status === 'completed' && epoch < total ? ' · 已提前停止' : ''}`;
+  $('trainingMetrics').textContent = Object.entries(run.metrics || {}).map(([k,v]) => `${k}: ${Number(v).toFixed(4)}`).join(' · ');
+  const log = $('trainingLog'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight-40;
+  log.textContent = run.log || '等待训练日志…'; if (atEnd) log.scrollTop = log.scrollHeight;
+  $('stopTraining').disabled = !['preparing','running'].includes(run.status);
+  $('useTrainedModel').disabled = !compatibleModel(run);
+  $('useTrainedModel').onclick = () => { chooseModel(run); showPage('annotation'); };
+}
+$('trainingRun').onchange = async e => { selectedTrainingRun = e.target.value; try { await renderTrainingRun(state.project.id,selectedTrainingRun); } catch(err) { $('trainingError').textContent = err.message; } };
+$('trainingForm').onsubmit = async e => {
+  e.preventDefault(); if (!state.project || $('startTraining').disabled) return;
+  $('startTraining').disabled = true; $('trainingError').textContent = '';
+  const params = {name:$('trainName').value.trim(),model_path:$('trainModel').value.trim(),device:$('trainDevice').value};
+  const fields = {epochs:'trainEpochs',imgsz:'trainImgsz',batch:'trainBatch',lr0:'trainLr',patience:'trainPatience',val_ratio:'trainVal',seed:'trainSeed',hsv_s:'trainSaturation',hsv_v:'trainBrightness',fliplr:'trainFlip',mosaic:'trainMosaic'};
+  for (const [key,id] of Object.entries(fields)) params[key] = Number($(id).value);
+  try {
+    await saveCurrentImage();
+    const run = await api(`/api/projects/${state.project.id}/training`,{method:'POST',...jsonOptions(params)});
+    selectedTrainingRun = run.id; await refreshTraining();
+  } catch(err) { $('trainingError').textContent = err.message; $('startTraining').disabled = false; }
+};
+$('stopTraining').onclick = async () => {
+  $('stopTraining').disabled = true;
+  try { await api(`/api/projects/${state.project.id}/training/${selectedTrainingRun}/stop`,{method:'POST'}); await refreshTraining(); }
+  catch(e) { $('trainingError').textContent = e.message; }
+};
+async function initializeTraining() {
+  try {
+    const env = await api('/api/training/environment'); state.trainingAvailable = env.available;
+    $('trainDevice').replaceChildren(...env.devices.map(d => new Option(d.name,d.id)));
+    $('trainingEnvironment').textContent = env.available ? '训练运行在标注服务所在主机。同一时间支持一个训练任务。优化器 AdamW；显存不足时请降低 Batch 或分辨率。' : '当前主机缺少训练依赖，请安装 pt 扩展。';
+  } catch(e) { $('trainingError').textContent = e.message; }
+  await loadProjects();
+  trainingPoll = setInterval(() => { if (state.project && (state.activeTab === 'training' || trainingRuns.some(r => ['preparing','running'].includes(r.status)))) refreshTraining().catch(e => { $('trainingError').textContent = e.message; }); },2000);
+}
+initializeTraining().catch(e => message(e.message));

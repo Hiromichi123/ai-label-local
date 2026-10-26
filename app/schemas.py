@@ -121,3 +121,28 @@ class LabelTextUpdate(BaseModel):
 class ServerDirectoryImport(ProjectCreate):
     path: str
     recursive: bool = True
+
+
+
+class TrainingRequest(BaseModel):
+    name: str = Field(default="标注模型", min_length=1, max_length=80)
+    model_path: str = ""
+    epochs: int = Field(default=100, ge=1, le=2000)
+    imgsz: int = Field(default=960, ge=64, le=2048)
+    batch: int = Field(default=4, ge=1, le=128)
+    device: str = Field(default="0", pattern=r"^(cpu|[0-9]+)$")
+    lr0: float = Field(default=0.001, gt=0, le=1)
+    patience: int = Field(default=30, ge=0, le=2000)
+    val_ratio: float = Field(default=0.2, gt=0, lt=1)
+    seed: int = Field(default=42, ge=0, le=2147483647)
+    hsv_s: float = Field(default=0.7, ge=0, le=1)
+    hsv_v: float = Field(default=0.4, ge=0, le=1)
+    fliplr: float = Field(default=0.5, ge=0, le=1)
+    mosaic: float = Field(default=1, ge=0, le=1)
+
+    @field_validator("imgsz")
+    @classmethod
+    def stride_size(cls, value):
+        if value % 32:
+            raise ValueError("训练分辨率必须是 32 的倍数")
+        return value

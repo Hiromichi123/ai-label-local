@@ -17,11 +17,13 @@ from .storage import Storage
 from .schemas import ServerDirectoryImport
 from .server_directories import roots, resolve_directory, image_files
 from .labels import parse_yolo, load_label
-from .schemas import LabelTextUpdate
+from .schemas import LabelTextUpdate, TrainingRequest
+from .training import TrainingManager, training_summary
 
 
 router = APIRouter(prefix="/api")
 storage = Storage()
+training = TrainingManager()
 
 
 def error(status: int, message: str):
@@ -355,3 +357,53 @@ def import_server_directory(request: ServerDirectoryImport):
         error(404, "目录不存在")
     except (OSError, ValueError) as exc:
         error(422, str(exc))
+
+
+@router.get("/training/environment")
+def training_environment():
+    import importlib.util
+    devices = [{"id": "cpu", "name": "CPU"}]
+    available = importlib.util.find_spec("ultralytics") is not None
+    if available:
+        try:
+            import torch
+            devices = [{"id": str(i), "name": f"GPU {i} · {torch.cuda.get_device_name(i)}"} for i in range(torch.cuda.device_count())] + devices
+        except Exception:
+            pass
+    return {"available": available, "devices": devices}
+
+
+@router.get("/projects/{project_id}/training")
+def training_runs(project_id: str):
+    try:
+        return {"summary": training_summary(storage, project_id), "runs": training.list(storage, project_id)}
+    except FileNotFoundError:
+        error(404, "project not found")
+
+
+@router.post("/projects/{project_id}/training")
+def start_training(project_id: str, request: TrainingRequest):
+    try:
+        return training.start(storage, project_id, request)
+    except FileNotFoundError as exc:
+        error(404, str(exc))
+    except RuntimeError as exc:
+        error(409, str(exc))
+    except (ValueError, ImportError) as exc:
+        error(422, str(exc))
+
+
+@router.get("/projects/{project_id}/training/{run_id}")
+def training_run(project_id: str, run_id: str):
+    try:
+        return training.view(storage, project_id, run_id, logs=True)
+    except (FileNotFoundError, ValueError):
+        error(404, "training run not found")
+
+
+@router.post("/projects/{project_id}/training/{run_id}/stop")
+def stop_training(project_id: str, run_id: str):
+    try:
+        return training.stop(storage, project_id, run_id)
+    except (FileNotFoundError, ValueError):
+        error(404, "training run not found")
