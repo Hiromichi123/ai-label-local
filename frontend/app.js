@@ -490,13 +490,13 @@ async function refreshTraining() {
     let remembered;
     try { remembered = localStorage.getItem(`ai-label-local.model.${projectId}`); } catch (_) {}
     const current = modelCatalog.find(r => compatibleModel(r) && r.model_path === $('model').value);
-    if (current) $('trainedModel').value = current.id;
-    else if (state.trainingModelProject !== projectId) {
+    if (state.trainingModelProject !== projectId) {
       state.trainingModelProject = projectId; state.selectedModelImageSize = null;
       const saved = modelCatalog.find(r => (r.id === remembered || r.run_id === remembered) && compatibleModel(r));
       if (saved) chooseModel(saved);
+      else if (current) { $('trainedModel').value = current.id; state.selectedModelImageSize = current.params.imgsz; }
       else $('model').value = state.defaultModelPath || $('model').value;
-    }
+    } else $('trainedModel').value = current?.id || '';
     if (!trainingRuns.some(r => r.id === selectedTrainingRun)) selectedTrainingRun = trainingRuns[0]?.id || '';
     $('trainingRun').replaceChildren(...trainingRuns.map(r => new Option(`${r.name} · ${trainingNames[r.status] || r.status} · ${r.created_at.slice(0,16)} UTC`,r.id)));
     $('trainingRun').value = selectedTrainingRun;
