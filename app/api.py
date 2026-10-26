@@ -223,7 +223,8 @@ def predict(project_id: str, request: PredictRequest):
         error(400, "model_path must point to an existing .pt or .onnx file")
     try:
         detector = load_detector(str(model_path))
-        prediction_classes = model_class_mapping(getattr(detector,"class_names",[]),project)
+        target_class = request.target_class_id if request.target_class_id is not None else class_ids(project)[0]
+        prediction_classes = model_class_mapping(getattr(detector,"class_names",[]),project,target_class)
     except Exception as exc:
         error(400, str(exc))
 
@@ -233,11 +234,11 @@ def predict(project_id: str, request: PredictRequest):
         detections = detector.predict(image, request.confidence, request.iou, request.image_size)
         from .labels import serialize
         from .schemas import Box
-        boxes = [Box(class_id=prediction_classes[d.class_id], x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if d.class_id in prediction_classes and d.x2 > d.x1 and d.y2 > d.y1]
+        boxes = [Box(class_id=prediction_classes.get(d.class_id,target_class), x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if d.class_id >= 0 and d.x2 > d.x1 and d.y2 > d.y1]
         # Never overwrite changes made while inference was running.
         with storage.lock:
             project_now = storage.project(project_id)
-            if class_ids(project_now) != class_ids(project):
+            if class_ids(project_now) != class_ids(project) or project_now["class_names"] != project["class_names"]:
                 raise RuntimeError("预测期间类别编号发生变化，未覆盖标注")
             record_now = project_now["images"][image_id]
             if record_now.get("version", 0) != record.get("version", 0):

@@ -125,3 +125,29 @@ def test_model_in_use_by_training_cannot_be_deleted(setup,tmp_path):
     assert entry['delete_blocked']
     assert c.delete('/api/models/'+entry['id']).status_code==409
     assert model.read_bytes()==b'base'
+
+
+def test_cross_project_model_uses_selected_class_for_unmatched_names(setup,tmp_path,monkeypatch):
+    import time
+    from app import api
+    from app.detectors.base import Detection
+    c,s,p,images,_=setup
+    model=tmp_path/'foreign-model.pt';model.write_bytes(b'fake')
+    class Detector:
+        class_names=['foreign','one']
+        def predict(self,*_):return [Detection(0,.9,4,4,20,20),Detection(1,.8,25,25,40,40)]
+    monkeypatch.setattr(api,'load_detector',lambda _:Detector())
+    url=f"/api/projects/{p['id']}/predict"
+    response=c.post(url,json={'scope':'current','image_id':images[0]['id'],'model_path':str(model),'target_class_id':12})
+    assert response.status_code==200,response.text
+    for _ in range(300):
+        job=c.get('/api/jobs/'+response.json()['id']).json()
+        if job['status'] in {'completed','failed'}:break
+        time.sleep(.01)
+    assert job['status']=='completed',job
+    assert [b['class_id'] for b in s.annotations(p['id'],images[0]['id'])['boxes']]==[12,5]
+    label=s._project_path(p['id'])/'labels'/f"{images[0]['id']}.txt"
+    before=label.read_bytes()
+    bad=c.post(url,json={'scope':'current','image_id':images[0]['id'],'model_path':str(model),'target_class_id':99})
+    assert bad.status_code==400
+    assert label.read_bytes()==before

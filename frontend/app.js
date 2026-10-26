@@ -320,7 +320,7 @@ async function runPrediction(scope) {
   try {
     if (scope !== 'current') await saveCurrentImage();
     setPredictionBusy(true); $('job').className = ''; $('job').textContent = '正在加载模型…'; $('predictProgress').removeAttribute('value');
-    let job = await api(`/api/projects/${projectId}/predict`, {method:'POST', ...jsonOptions({scope,image_id:imageId,model_path:$('model').value,confidence:Number($('confidence').value),image_size:state.selectedModelImageSize || state.defaultImageSize || 640})});
+    let job = await api(`/api/projects/${projectId}/predict`, {method:'POST', ...jsonOptions({scope,image_id:imageId,target_class_id:Number($('currentClass').value),model_path:$('model').value,confidence:Number($('confidence').value),image_size:state.selectedModelImageSize || state.defaultImageSize || 640})});
     showPredictionProgress(job);
     while (!['completed','failed','cancelled'].includes(job.status)) {
       await new Promise(resolve => setTimeout(resolve,400));
@@ -445,9 +445,9 @@ async function showPage(tab) {
 $('annotationTab').onclick = () => showPage('annotation');
 $('trainingTab').onclick = () => showPage('training').catch(e => { $('trainingError').textContent = e.message; });
 $('trainingProject').onchange = async e => { try { selectedTrainingRun = ''; await selectProject(e.target.value); } catch(err) { $('trainingError').textContent = err.message; } };
-function compatibleModel(run) { return run.model_available && (!run.class_names?.length || run.class_names.every(name => state.project?.class_names.includes(name))); }
+function compatibleModel(run) { return Boolean(run.model_available); }
 function chooseModel(run) {
-  if (!compatibleModel(run)) { message('模型文件不存在或类别与当前项目不一致'); return; }
+  if (!compatibleModel(run)) { message('模型文件不存在或已被删除'); return; }
   const catalogId = modelCatalog.find(m=>m.model_path===run.model_path)?.id || run.id;
   $('model').value = run.model_path; $('trainedModel').value = catalogId; state.selectedModelImageSize = run.params.imgsz;
   try { localStorage.setItem(`ai-label-local.model.${state.project.id}`,catalogId); } catch (_) {}
@@ -476,17 +476,17 @@ async function refreshTraining() {
     for (const model of modelCatalog) {
       const groupName = model.project_name || '项目内模型文件';
       if (!groups.has(groupName)) { const group=document.createElement('optgroup'); group.label=groupName; groups.set(groupName,group); }
-      const compatible=compatibleModel(model);
+      const crossClass=model.class_names?.some(name=>!state.project.class_names.includes(name));
       const detail = model.kind==='training' ? ` · ${model.epochs ?? '?'}轮 · ${model.imgsz} · ${model.created_at ? new Date(model.created_at).toLocaleString() : ''}` : '';
-      const option=new Option(`${model.name}${detail}${compatible?'':'（类别不匹配）'}`,model.id);
-      option.disabled=!compatible; groups.get(groupName).append(option);
+      const option=new Option(`${model.name}${detail}${crossClass?'（跨类别→当前标签）':''}`,model.id);
+      groups.get(groupName).append(option);
     }
     const signature=JSON.stringify([state.project.class_names,modelCatalog.map(m=>[m.id,m.name,m.project_name,m.epochs,m.imgsz])]);
     if ($('trainedModel').dataset.catalog!==signature) {
       $('trainedModel').replaceChildren(new Option('默认或手动指定模型',''),...groups.values());
       $('trainedModel').dataset.catalog=signature;
     }
-    $('modelCatalogInfo').textContent=`共 ${modelCatalog.length} 个模型，${modelCatalog.filter(compatibleModel).length} 个可选择；未知类别在推理时校验，其他模型标明匹配情况。`;
+    $('modelCatalogInfo').textContent=`共 ${modelCatalog.length} 个模型，${modelCatalog.filter(compatibleModel).length} 个可跨项目选择；同名类别自动匹配，其他类别使用当前标签编号。`;
     let remembered;
     try { remembered = localStorage.getItem(`ai-label-local.model.${projectId}`); } catch (_) {}
     const current = modelCatalog.find(r => compatibleModel(r) && r.model_path === $('model').value);

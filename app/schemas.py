@@ -96,6 +96,7 @@ class CropRequest(BaseModel):
 
 
 class PredictRequest(BaseModel):
+    target_class_id: int | None = Field(default=None, ge=0, le=999999)
     model_path: str = ""
     overwrite_existing: bool = False
     scope: Literal["unfinished", "current"] = "unfinished"

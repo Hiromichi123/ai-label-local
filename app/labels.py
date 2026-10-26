@@ -91,11 +91,13 @@ def validate_label_text(text: str, width: int, height: int, allowed: list[int]):
     return boxes, errors
 
 
-def model_class_mapping(model_names: list[str], project: dict) -> dict[int, int]:
+def model_class_mapping(model_names: list[str], project: dict, fallback_class_id: int | None = None) -> dict[int, int]:
     ids = class_ids(project)
+    if fallback_class_id is not None and fallback_class_id not in ids:
+        raise ValueError('目标类别编号不在当前项目中')
     if not model_names:
         return dict(enumerate(ids))
     missing = [name for name in model_names if name not in project['class_names']]
-    if missing:
+    if missing and fallback_class_id is None:
         raise ValueError('模型类别不在当前项目中：' + '、'.join(missing) + '。请切换对应项目或先新增这些类别。')
-    return {i:ids[project['class_names'].index(name)] for i,name in enumerate(model_names)}
+    return {i:ids[project['class_names'].index(name)] if name in project['class_names'] else fallback_class_id for i,name in enumerate(model_names)}
