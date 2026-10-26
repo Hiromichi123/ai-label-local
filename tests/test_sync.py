@@ -23,5 +23,8 @@ def test_sync_snapshot_receiver_and_backup(tmp_path):
     first = subprocess.run(command, check=True, capture_output=True, text=True)
     assert json.loads(first.stdout)['images'] == 1
     assert (remote / 'projects' / pid / 'images' / (r['id'] + '.jpg')).read_bytes() == storage.image_path(pid, r['id']).read_bytes()
+    settings_file = remote / 'projects' / pid / 'training_settings.json'
+    settings_file.write_text('{"epochs":77}', encoding='utf-8')
     subprocess.run(command, check=True, capture_output=True, text=True)
+    assert json.loads(settings_file.read_text()) == {'epochs':77}
     assert len(list((remote / 'sync_backups').iterdir())) == 1

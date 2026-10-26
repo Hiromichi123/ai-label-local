@@ -41,6 +41,7 @@
 <label>水平翻转概率<input id="trainFlip" type="number" min="0" max="1" step="0.05" value="0.5" required></label>
 <label>Mosaic 概率<input id="trainMosaic" type="number" min="0" max="1" step="0.05" value="1" required></label>
 <button id="startTraining" type="submit">开始训练</button></form>
+<button id="saveTrainingSettings" type="button">保存训练参数</button><span id="trainingSettingsStatus" role="status" aria-live="polite">训练参数按项目自动保存</span>
 <p id="trainingEnvironment" class="hint"></p><p id="trainingError" role="alert"></p>
 <div class="training-monitor"><h2>训练任务</h2><label for="trainingRun">历史任务</label><select id="trainingRun"></select>
 <progress id="trainingProgress" max="100" value="0" aria-label="训练进度"></progress><p id="trainingStatus" role="status" aria-live="polite">尚无训练任务</p>

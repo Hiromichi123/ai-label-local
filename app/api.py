@@ -390,11 +390,41 @@ def training_runs(project_id: str):
         error(404, "project not found")
 
 
+@router.get("/projects/{project_id}/training-settings")
+def training_settings(project_id: str):
+    try:
+        storage.project(project_id)
+        path = storage._project_path(project_id)/"training_settings.json"
+        if path.is_file():
+            params = TrainingRequest.model_validate(json.loads(path.read_text(encoding='utf-8')))
+            return {"params":params.model_dump(),"source":"saved"}
+        runs = training.list(storage,project_id)
+        if runs:
+            return {"params":TrainingRequest.model_validate(runs[0]['params']).model_dump(),"source":"last_run"}
+        params = TrainingRequest(model_path=model_management.settings(storage)['default_model_path'])
+        return {"params":params.model_dump(),"source":"defaults"}
+    except FileNotFoundError:
+        error(404,"project not found")
+
+
+@router.put("/projects/{project_id}/training-settings")
+def save_training_settings(project_id: str, request: TrainingRequest):
+    from .training import write_json
+    try:
+        with storage.lock:
+            storage.project(project_id)
+            write_json(storage._project_path(project_id)/"training_settings.json",request.model_dump())
+        return {"params":request.model_dump(),"source":"saved"}
+    except FileNotFoundError:
+        error(404,"project not found")
+
+
 @router.post("/projects/{project_id}/training")
 def start_training(project_id: str, request: TrainingRequest):
     try:
         if not request.model_path:
             request = request.model_copy(update={"model_path":model_management.settings(storage)["default_model_path"]})
+        save_training_settings(project_id,request)
         return training.start(storage, project_id, request)
     except FileNotFoundError as exc:
         error(404, str(exc))

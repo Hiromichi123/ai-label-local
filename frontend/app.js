@@ -23,12 +23,14 @@ async function loadProjects() {
   if (projects.length) await selectProject(projects[0].id);
 }
 async function selectProject(id) {
+  if (state.project && state.project.id !== id) await flushTrainingParameters(state.project.id).catch(() => {});
   if (state.project && state.project.id !== id && state.current) await saveCurrentImage();
   if (state.project?.id !== id) { state.activeClass = 0; trainingRuns = []; selectedTrainingRun = ''; state.trainingModelProject = null; state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; $('trainModel').value = ''; }
   state.current = null; state.crop = null; state.annotations = []; state.selected = -1;
   imageCache.clear();
   state.project = await api(`/api/projects/${id}`);
   state.images = Object.values(state.project.images);
+  await restoreTrainingParameters(id);
   renderClasses();
   renderImages();
   $('projectSelect').value = id; $('trainingProject').value = id;
@@ -479,7 +481,8 @@ async function refreshTraining() {
     $('trainingRun').replaceChildren(...trainingRuns.map(r => new Option(`${r.name} · ${trainingNames[r.status] || r.status} · ${r.created_at.slice(0,16)} UTC`,r.id)));
     $('trainingRun').value = selectedTrainingRun;
     $('startTraining').disabled = summary.reviewed < 2 || trainingRuns.some(r => ['preparing','running','stopping'].includes(r.status)) || state.trainingAvailable === false;
-    if (!$('trainModel').value) $('trainModel').value = $('model').value;
+    const prefs = trainingParameterCache.get(projectId);
+    if (prefs?.dirty && !trainingParametersTimer) flushTrainingParameters(projectId).catch(() => {});
     if (selectedTrainingRun) await renderTrainingRun(projectId, selectedTrainingRun);
     else { $('trainingStatus').textContent = '尚无训练任务'; $('trainingLog').textContent = ''; $('trainingProgress').value = 0; $('trainingMetrics').textContent = ''; $('stopTraining').disabled = true; $('useTrainedModel').disabled = true; }
   } finally { trainingRefreshing = false; if (trainingRefreshPending) { trainingRefreshPending = false; refreshTraining().catch(e => { $('trainingError').textContent = e.message; }); } }
@@ -502,10 +505,9 @@ $('trainingRun').onchange = async e => { selectedTrainingRun = e.target.value; t
 $('trainingForm').onsubmit = async e => {
   e.preventDefault(); if (!state.project || $('startTraining').disabled) return;
   $('startTraining').disabled = true; $('trainingError').textContent = '';
-  const params = {name:$('trainName').value.trim(),model_path:$('trainModel').value.trim(),device:$('trainDevice').value};
-  const fields = {epochs:'trainEpochs',imgsz:'trainImgsz',batch:'trainBatch',lr0:'trainLr',patience:'trainPatience',val_ratio:'trainVal',seed:'trainSeed',hsv_s:'trainSaturation',hsv_v:'trainBrightness',fliplr:'trainFlip',mosaic:'trainMosaic'};
-  for (const [key,id] of Object.entries(fields)) params[key] = Number($(id).value);
+  const params = trainingParams(captureTrainingRaw());
   try {
+    await flushTrainingParameters(state.project.id);
     await saveCurrentImage();
     const run = await api(`/api/projects/${state.project.id}/training`,{method:'POST',...jsonOptions(params)});
     selectedTrainingRun = run.id; await refreshTraining();
@@ -525,7 +527,7 @@ async function initializeTraining() {
   await loadProjects();
   trainingPoll = setInterval(() => { if (state.project && (state.activeTab === 'training' || trainingRuns.some(r => ['preparing','running'].includes(r.status)))) refreshTraining().catch(e => { $('trainingError').textContent = e.message; }); },2000);
 }
-initializeTraining().catch(e => message(e.message));
+// Training parameter controller is initialized below.
 
 $('renameProject').onclick = async () => {
   if (!state.project || state.predictBusy || state.drawing) return;
@@ -559,7 +561,7 @@ async function refreshManagedModels() {
         await api(`/api/models/${model.id}`,{method:'DELETE'});
         const config=await api('/api/config'); state.defaultModelPath=config.default_model_path;
         if ($('model').value===model.path) { $('model').value=config.default_model_path; state.selectedModelImageSize=null; $('trainedModel').value=''; try { localStorage.removeItem(`ai-label-local.model.${state.project.id}`); } catch (_) {} }
-        if ($('trainModel').value===model.path) $('trainModel').value=config.default_model_path;
+        if ($('trainModel').value===model.path) { $('trainModel').value=config.default_model_path; noteTrainingParameterChange(); }
         await refreshTraining(); await refreshManagedModels(); message('模型权重已删除');
       } catch(e) { $('modelManagerError').textContent=e.message; }
       finally { modelsBusy=false; }
@@ -573,3 +575,84 @@ async function refreshManagedModels() {
 $('manageModels').onclick = async () => { $('modelsDialog').showModal(); $('modelManagerError').textContent=''; try { await refreshManagedModels(); } catch(e) { $('modelManagerError').textContent=e.message; } };
 $('closeModels').onclick = () => { if (!modelsBusy) $('modelsDialog').close(); };
 $('modelsDialog').addEventListener('cancel', e => { if (modelsBusy) e.preventDefault(); });
+const trainingParamFields = {name:'trainName',model_path:'trainModel',device:'trainDevice',epochs:'trainEpochs',imgsz:'trainImgsz',batch:'trainBatch',lr0:'trainLr',patience:'trainPatience',val_ratio:'trainVal',seed:'trainSeed',hsv_s:'trainSaturation',hsv_v:'trainBrightness',fliplr:'trainFlip',mosaic:'trainMosaic'};
+const trainingParameterCache = new Map();
+const trainingFormDefaults = Object.fromEntries(Object.entries(trainingParamFields).map(([key,id]) => [key,$(id).value]));
+let trainingParametersTimer = null;
+function captureTrainingRaw() { return Object.fromEntries(Object.entries(trainingParamFields).map(([key,id]) => [key,$(id).value])); }
+function trainingParams(raw) { return Object.fromEntries(Object.entries(raw).map(([key,value]) => [key,['name','model_path','device'].includes(key) ? value.trim() : Number(value)])); }
+function validTrainingPreferences() { return Object.entries(trainingParamFields).every(([key,id]) => key==='model_path' || $(id).checkValidity()); }
+function trainingDraftKey(id) { return `ai-label-local.training-draft.${id}`; }
+function setTrainingSaveStatus(id,text) { if (state.trainingFormProject === id) $('trainingSettingsStatus').textContent=text; }
+function saveTrainingDraft(id,entry) { try { localStorage.setItem(trainingDraftKey(id),JSON.stringify({raw:entry.raw,dirty:true})); } catch (_) {} }
+function applyTrainingRaw(raw) {
+  const device = String(raw.device);
+  if (![...$('trainDevice').options].some(option => option.value===device)) $('trainDevice').add(new Option(`${device}（当前不可用，请调整设备）`,device));
+  for (const [key,id] of Object.entries(trainingParamFields)) $(id).value = raw[key] ?? trainingFormDefaults[key];
+}
+async function restoreTrainingParameters(projectId) {
+  if (state.trainingFormProject === projectId) return;
+  clearTimeout(trainingParametersTimer); trainingParametersTimer = null;
+  const entry = trainingParameterCache.get(projectId) || {raw:null,dirty:false,revision:0,pending:null};
+  trainingParameterCache.set(projectId,entry);
+  let saved = {params:trainingFormDefaults,source:'defaults'};
+  try { saved = await api(`/api/projects/${projectId}/training-settings`); }
+  catch(e) { if (!entry.raw) throw e; }
+  if (state.project?.id !== projectId) return;
+  try {
+    const draft = JSON.parse(localStorage.getItem(trainingDraftKey(projectId)) || 'null');
+    if (!entry.dirty && draft?.dirty && draft.raw) { entry.raw = {...saved.params,...draft.raw}; entry.dirty = true; entry.revision++; }
+  } catch (_) {}
+  if (!entry.dirty) {
+    entry.raw = Object.fromEntries(Object.entries(saved.params).map(([key,value]) => [key,String(value)]));
+    if (saved.source === 'defaults') entry.raw.device = $('trainDevice').options[0]?.value || 'cpu';
+  }
+  state.trainingFormProject = projectId;
+  applyTrainingRaw(entry.raw);
+  setTrainingSaveStatus(projectId,entry.dirty ? '已恢复本机未同步草稿' : saved.source==='last_run' ? '已恢复最近一次训练参数' : saved.source==='saved' ? '已恢复保存的训练参数' : '使用默认训练参数');
+  if (entry.dirty && validTrainingPreferences()) flushTrainingParameters(projectId).catch(() => {});
+}
+function noteTrainingParameterChange() {
+  const id = state.trainingFormProject;
+  if (!id || state.project?.id !== id) return;
+  const entry = trainingParameterCache.get(id);
+  if (!entry) return;
+  entry.raw = captureTrainingRaw(); entry.dirty = true; entry.revision++;
+  saveTrainingDraft(id,entry);
+  clearTimeout(trainingParametersTimer); trainingParametersTimer = null;
+  if (!validTrainingPreferences()) { setTrainingSaveStatus(id,'参数未完整或无效，已保留本机草稿'); return; }
+  setTrainingSaveStatus(id,'参数待保存…');
+  trainingParametersTimer = setTimeout(() => { trainingParametersTimer=null; flushTrainingParameters(id).catch(() => {}); },500);
+}
+async function flushTrainingParameters(id = state.trainingFormProject) {
+  const entry = trainingParameterCache.get(id);
+  if (!entry?.dirty) return;
+  if (entry.pending) { await entry.pending; if (entry.dirty) return flushTrainingParameters(id); return; }
+  if (state.trainingFormProject===id && !validTrainingPreferences()) { setTrainingSaveStatus(id,'参数无效，已保留本机草稿'); throw new Error('请补全有效的训练参数'); }
+  const revision = entry.revision, params = trainingParams(entry.raw);
+  setTrainingSaveStatus(id,'正在保存训练参数…');
+  entry.pending = api(`/api/projects/${id}/training-settings`,{method:'PUT',...jsonOptions(params)}).then(() => {
+    if (entry.revision===revision) {
+      entry.dirty=false;
+      try { localStorage.removeItem(trainingDraftKey(id)); } catch (_) {}
+      setTrainingSaveStatus(id,'训练参数已保存');
+    }
+  }).catch(e => { saveTrainingDraft(id,entry); setTrainingSaveStatus(id,`尚未同步，已保留本机草稿：${e.message}`); throw e; }).finally(() => { entry.pending=null; });
+  await entry.pending;
+  if (entry.dirty) return flushTrainingParameters(id);
+}
+$('trainingForm').addEventListener('input',noteTrainingParameterChange);
+$('trainingForm').addEventListener('change',() => { noteTrainingParameterChange(); clearTimeout(trainingParametersTimer); trainingParametersTimer=null; if (validTrainingPreferences()) flushTrainingParameters().catch(() => {}); });
+$('saveTrainingSettings').onclick = async () => {
+  noteTrainingParameterChange(); clearTimeout(trainingParametersTimer); trainingParametersTimer=null;
+  if (!validTrainingPreferences()) { setTrainingSaveStatus(state.trainingFormProject,'参数无效，已保留本机草稿'); return; }
+  try { await flushTrainingParameters(); } catch(e) { $('trainingError').textContent=e.message; }
+};
+window.addEventListener('online',() => { for (const [id,entry] of trainingParameterCache) if (entry.dirty) flushTrainingParameters(id).catch(() => {}); });
+window.addEventListener('pagehide',() => {
+  const id=state.trainingFormProject, entry=trainingParameterCache.get(id);
+  if (!entry?.dirty) return;
+  saveTrainingDraft(id,entry);
+  if (validTrainingPreferences()) fetch(`/api/projects/${id}/training-settings`,{method:'PUT',...jsonOptions(trainingParams(entry.raw)),keepalive:true}).catch(() => {});
+});
+initializeTraining().catch(e => message(e.message));

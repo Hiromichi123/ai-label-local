@@ -34,6 +34,7 @@ for iid,r in project['images'].items():
  assert (stage/'images'/(iid+'.jpg')).is_file() and (stage/'labels'/(iid+'.txt')).is_file()
 target=projects/pid;backup=None
 if target.exists():
+ if (target/'training_settings.json').is_file():shutil.copy2(target/'training_settings.json',stage/'training_settings.json')
  if (target/'originals').exists():shutil.copytree(target/'originals',stage/'originals')
  backups=workspace/'sync_backups';backups.mkdir(exist_ok=True)
  backup=backups/(pid+'_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'));target.rename(backup)
