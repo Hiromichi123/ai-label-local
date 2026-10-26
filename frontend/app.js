@@ -301,7 +301,7 @@ $('import').onclick = async () => {
 };
 function setPredictionBusy(busy) {
   state.predictBusy = busy;
-  ['renameProject','downloadImage','manageModels','currentClassId','applyClassId','trainedModel','trainingTab','browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  ['refreshModelList','renameProject','downloadImage','manageModels','currentClassId','applyClassId','trainedModel','trainingTab','browseServer','predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
   if (!busy) { prepareCrop(); renderCurrentClass(); }
 }
 function showPredictionProgress(job) {
@@ -431,6 +431,7 @@ $('serverImport').onclick = async () => {
   } catch(e) { $('serverError').textContent = typeof e.message === 'string' ? e.message : '导入失败'; }
   finally { serverImportBusy = false; controls.forEach(el => el.disabled = false); $('serverImportProgress').hidden = true; }
 };
+let modelCatalog = [];
 let trainingRuns = [], selectedTrainingRun = '', trainingPoll = null, trainingRefreshing = false, trainingRefreshPending = false;
 const trainingNames = {preparing:'准备数据快照',running:'正在训练',completed:'训练完成',failed:'训练失败',cancelled:'已停止',stopping:'正在停止'};
 async function showPage(tab) {
@@ -444,15 +445,16 @@ async function showPage(tab) {
 $('annotationTab').onclick = () => showPage('annotation');
 $('trainingTab').onclick = () => showPage('training').catch(e => { $('trainingError').textContent = e.message; });
 $('trainingProject').onchange = async e => { try { selectedTrainingRun = ''; await selectProject(e.target.value); } catch(err) { $('trainingError').textContent = err.message; } };
-function compatibleModel(run) { return run.model_available && JSON.stringify(run.class_names) === JSON.stringify(state.project?.class_names); }
+function compatibleModel(run) { return run.model_available && (!run.class_names?.length || run.class_names.every(name => state.project?.class_names.includes(name))); }
 function chooseModel(run) {
   if (!compatibleModel(run)) { message('模型文件不存在或类别与当前项目不一致'); return; }
-  $('model').value = run.model_path; $('trainedModel').value = run.id; state.selectedModelImageSize = run.params.imgsz;
-  try { localStorage.setItem(`ai-label-local.model.${state.project.id}`,run.id); } catch (_) {}
+  const catalogId = modelCatalog.find(m=>m.model_path===run.model_path)?.id || run.id;
+  $('model').value = run.model_path; $('trainedModel').value = catalogId; state.selectedModelImageSize = run.params.imgsz;
+  try { localStorage.setItem(`ai-label-local.model.${state.project.id}`,catalogId); } catch (_) {}
   message(`已选择 ${run.name} · 推理分辨率 ${run.params.imgsz}`);
 }
 $('trainedModel').onchange = e => {
-  const run = trainingRuns.find(r => r.id === e.target.value);
+  const run = modelCatalog.find(r => r.id === e.target.value);
   if (run) chooseModel(run);
   else { state.selectedModelImageSize = null; $('model').value = state.defaultModelPath || ''; try { localStorage.removeItem(`ai-label-local.model.${state.project.id}`); } catch (_) {} }
 };
@@ -463,20 +465,35 @@ async function refreshTraining() {
   trainingRefreshing = true;
   const projectId = state.project.id;
   try {
-    const data = await api(`/api/projects/${projectId}/training`);
+    const [data,catalog] = await Promise.all([api(`/api/projects/${projectId}/training`),api('/api/models')]);
     if (state.project?.id !== projectId) return;
     trainingRuns = data.runs;
+    modelCatalog = catalog.models.map(model=>({...model,model_path:model.path,model_available:true,params:{imgsz:model.imgsz}}));
     if (['Failed to fetch','NetworkError when attempting to fetch resource.'].includes($('trainingError').textContent)) $('trainingError').textContent = '';
     const summary = data.summary;
     $('trainingSummary').textContent = `可训练：${summary.reviewed} 张已审核图片 / 共 ${summary.total} 张；排除 ${summary.excluded} 张待审核或待裁剪图片。类别：${summary.class_names.join('、')}`;
-    $('trainedModel').replaceChildren(new Option('默认或手动指定模型',''), ...trainingRuns.filter(compatibleModel).map(r => new Option(`${r.name} · ${r.created_at.slice(0,16).replace('T',' ')} UTC`,r.id)));
+    const groups = new Map();
+    for (const model of modelCatalog) {
+      const groupName = model.project_name || '项目内模型文件';
+      if (!groups.has(groupName)) { const group=document.createElement('optgroup'); group.label=groupName; groups.set(groupName,group); }
+      const compatible=compatibleModel(model);
+      const detail = model.kind==='training' ? ` · ${model.epochs ?? '?'}轮 · ${model.imgsz} · ${model.created_at ? new Date(model.created_at).toLocaleString() : ''}` : '';
+      const option=new Option(`${model.name}${detail}${compatible?'':'（类别不匹配）'}`,model.id);
+      option.disabled=!compatible; groups.get(groupName).append(option);
+    }
+    const signature=JSON.stringify([state.project.class_names,modelCatalog.map(m=>[m.id,m.name,m.project_name,m.epochs,m.imgsz])]);
+    if ($('trainedModel').dataset.catalog!==signature) {
+      $('trainedModel').replaceChildren(new Option('默认或手动指定模型',''),...groups.values());
+      $('trainedModel').dataset.catalog=signature;
+    }
+    $('modelCatalogInfo').textContent=`共 ${modelCatalog.length} 个模型，${modelCatalog.filter(compatibleModel).length} 个可选择；未知类别在推理时校验，其他模型标明匹配情况。`;
     let remembered;
     try { remembered = localStorage.getItem(`ai-label-local.model.${projectId}`); } catch (_) {}
-    const current = trainingRuns.find(r => compatibleModel(r) && r.model_path === $('model').value);
+    const current = modelCatalog.find(r => compatibleModel(r) && r.model_path === $('model').value);
     if (current) $('trainedModel').value = current.id;
     else if (state.trainingModelProject !== projectId) {
       state.trainingModelProject = projectId; state.selectedModelImageSize = null;
-      const saved = trainingRuns.find(r => r.id === remembered && compatibleModel(r));
+      const saved = modelCatalog.find(r => (r.id === remembered || r.run_id === remembered) && compatibleModel(r));
       if (saved) chooseModel(saved);
       else $('model').value = state.defaultModelPath || $('model').value;
     }
@@ -552,8 +569,8 @@ async function refreshManagedModels() {
     const details = document.createElement('p'); details.className='hint'; details.textContent = model.kind==='training' ? `${model.project_name} · ${model.epochs ?? '?'} 轮 · ${model.imgsz} 分辨率 · ${model.created_at ? new Date(model.created_at).toLocaleString() : ''}` : '项目内模型文件';
     const actions = document.createElement('div');
     const use = document.createElement('button'); use.textContent = '用于当前打标';
-    use.disabled = Boolean(model.class_names && JSON.stringify(model.class_names)!==JSON.stringify(state.project?.class_names));
-    use.onclick = () => { $('model').value = model.path; state.selectedModelImageSize = model.imgsz; $('trainedModel').value = model.run_id || ''; $('modelsDialog').close(); message(`已选择模型 ${model.name}`); };
+    use.disabled = !compatibleModel({...model,model_available:true});
+    use.onclick = () => { chooseModel({...model,model_path:model.path,model_available:true,params:{imgsz:model.imgsz}}); $('modelsDialog').close(); };
     const makeDefault = document.createElement('button'); makeDefault.textContent = '设为默认'; makeDefault.disabled = model.default;
     makeDefault.onclick = async () => { if (modelsBusy) return; modelsBusy = true; try { const result = await api(`/api/models/${model.id}/default`,{method:'PUT'}); state.defaultModelPath = result.default_model_path; state.defaultImageSize = result.default_image_size; await refreshManagedModels(); } catch(e) { $('modelManagerError').textContent=e.message; } finally { modelsBusy=false; } };
     const remove = document.createElement('button'); remove.textContent = '删除模型'; remove.disabled = Boolean(model.delete_blocked); remove.title = model.delete_blocked || '删除权重，保留训练记录及数据';
@@ -690,3 +707,5 @@ function queueLabelValidation(delay=180) {
 $('labelText').addEventListener('input',()=>{ labelLineErrors=[]; renderLabelHighlight(); queueLabelValidation(); });
 $('labelText').addEventListener('scroll',syncLabelScroll);
 $('labelEditor').addEventListener('close',()=>{ clearTimeout(labelValidationTimer); ++labelValidationSequence; });
+
+$('refreshModelList').onclick = async () => { try { await refreshTraining(); message('模型列表已刷新'); } catch(e) { message(e.message); } };

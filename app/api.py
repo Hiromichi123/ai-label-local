@@ -16,7 +16,7 @@ from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, Ex
 from .storage import Storage
 from .schemas import ServerDirectoryImport
 from .server_directories import roots, resolve_directory, image_files
-from .labels import parse_yolo, load_label, class_ids, validate_label_text
+from .labels import parse_yolo, load_label, class_ids, validate_label_text, model_class_mapping
 from .schemas import LabelTextUpdate, TrainingRequest, ProjectRename
 from . import model_management
 from .training import TrainingManager, training_summary
@@ -223,6 +223,7 @@ def predict(project_id: str, request: PredictRequest):
         error(400, "model_path must point to an existing .pt or .onnx file")
     try:
         detector = load_detector(str(model_path))
+        prediction_classes = model_class_mapping(getattr(detector,"class_names",[]),project)
     except Exception as exc:
         error(400, str(exc))
 
@@ -232,7 +233,7 @@ def predict(project_id: str, request: PredictRequest):
         detections = detector.predict(image, request.confidence, request.iou, request.image_size)
         from .labels import serialize
         from .schemas import Box
-        boxes = [Box(class_id=class_ids(project)[d.class_id], x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if 0 <= d.class_id < len(project["class_names"]) and d.x2 > d.x1 and d.y2 > d.y1]
+        boxes = [Box(class_id=prediction_classes[d.class_id], x1=max(0, d.x1), y1=max(0, d.y1), x2=min(record["width"], d.x2), y2=min(record["height"], d.y2), confidence=d.confidence, source="model", status="needs_review") for d in detections if d.class_id in prediction_classes and d.x2 > d.x1 and d.y2 > d.y1]
         # Never overwrite changes made while inference was running.
         with storage.lock:
             project_now = storage.project(project_id)
