@@ -14,6 +14,8 @@ from .detectors import load_detector
 from .jobs import manager
 from .schemas import AnnotationUpdate, ClassCreate, ClassRename, CropRequest, ExportRequest, PredictRequest, ProjectCreate
 from .storage import Storage
+from .labels import parse_yolo
+from .schemas import LabelTextUpdate
 
 
 router = APIRouter(prefix="/api")
@@ -148,6 +150,38 @@ def annotations(project_id: str, image_id: str):
 def update_annotations(project_id: str, image_id: str, request: AnnotationUpdate):
     try:
         return storage.save_annotations(project_id, image_id, request.version, request.boxes)
+    except FileNotFoundError:
+        error(404, "image not found")
+    except RuntimeError as exc:
+        error(409, str(exc))
+    except ValueError as exc:
+        error(422, str(exc))
+
+
+@router.get("/projects/{project_id}/images/{image_id}/label-file")
+def label_file(project_id: str, image_id: str):
+    try:
+        record = storage.image_record(project_id, image_id)
+        path = storage._project_path(project_id) / "labels" / f"{image_id}.txt"
+        return {"version": record.get("version", 0), "filename": path.name,
+                "text": path.read_text(encoding="utf-8") if path.exists() else ""}
+    except FileNotFoundError:
+        error(404, "image not found")
+
+
+@router.put("/projects/{project_id}/images/{image_id}/label-file")
+def update_label_file(project_id: str, image_id: str, request: LabelTextUpdate):
+    try:
+        record = storage.image_record(project_id, image_id)
+        boxes = parse_yolo(request.text, record["width"], record["height"], len(storage.project(project_id)["class_names"]))
+        # Text edits must not silently clip a box beyond the image boundary.
+        for number, line in enumerate(request.text.splitlines(), 1):
+            if not line.strip():
+                continue
+            _, cx, cy, bw, bh = map(float, line.split())
+            if cx-bw/2 < -1e-6 or cy-bh/2 < -1e-6 or cx+bw/2 > 1+1e-6 or cy+bh/2 > 1+1e-6:
+                raise ValueError(f"line {number}: box extends beyond image")
+        return storage.save_annotations(project_id, image_id, request.version, boxes)
     except FileNotFoundError:
         error(404, "image not found")
     except RuntimeError as exc:

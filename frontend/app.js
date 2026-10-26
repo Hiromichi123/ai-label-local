@@ -153,39 +153,39 @@ $('canvas').addEventListener('pointerdown', event => {
   if (!state.current || state.predictBusy || state.enterBusy || event.button !== 0) return;
   if (state.crop) { dragCrop(event); return; }
   const p = canvasPoint(event);
-  snapshot();
-  // Existing boxes are intentionally read-only. Every pointer-down starts a new box.
-  const box = { class_id: 0, x1: p.x, y1: p.y, x2: p.x, y2: p.y, source: 'human', status: 'edited' };
-  state.annotations.push(box);
-  state.selected = state.annotations.length - 1;
-  const start = { ...p };
-  const canvas = $('canvas');
-  canvas.setPointerCapture?.(event.pointerId);
-
-  const move = e => {
-    const q = canvasPoint(e);
-    // Normalize both corners, so drawing works from any starting corner.
-    box.x1 = Math.max(0, Math.min(start.x, q.x));
-    box.y1 = Math.max(0, Math.min(start.y, q.y));
-    box.x2 = Math.min(canvas.width, Math.max(start.x, q.x));
-    box.y2 = Math.min(canvas.height, Math.max(start.y, q.y));
-    draw();
-  };
-  const up = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    canvas.releasePointerCapture?.(event.pointerId);
-    // Do not leave a zero-area annotation when the pointer only clicked.
-    if (box.x2 - box.x1 < 2 || box.y2 - box.y1 < 2) {
-      state.annotations.splice(state.selected, 1);
-      state.selected = -1;
-    }
-    renderBoxList(); draw();
-  };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
+  state.selected = state.annotations.findLastIndex(b => p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2);
+  renderBoxList(); draw();
 });
-$('addBox').onclick = () => { if (!state.current || state.crop) return; snapshot(); state.annotations.push({class_id: 0, x1: 20, y1: 20, x2: 120, y2: 120, source: 'human', status: 'edited'}); state.selected = -1; renderBoxList(); draw(); };
+$('editLabelFile').onclick = async () => {
+  if (!state.current || state.crop || state.predictBusy || state.enterBusy) return;
+  state.enterBusy = true;
+  try {
+    await saveCurrentImage();
+    const data = await api(`/api/projects/${state.project.id}/images/${state.current}/label-file`);
+    state.labelFileVersion = data.version;
+    $('labelFilename').textContent = data.filename;
+    $('labelText').value = data.text; $('labelError').textContent = '';
+    $('labelEditor').showModal(); $('labelText').focus();
+  } catch (e) { message(e.message); }
+  finally { state.enterBusy = false; }
+};
+$('cancelLabelText').onclick = () => $('labelEditor').close();
+$('labelEditor').addEventListener('cancel', e => { if ($('saveLabelText').disabled) e.preventDefault(); });
+$('saveLabelText').onclick = async () => {
+  $('saveLabelText').disabled = true; $('cancelLabelText').disabled = true;
+  try {
+    const result = await api(`/api/projects/${state.project.id}/images/${state.current}/label-file`, {method:'PUT', ...jsonOptions({version:state.labelFileVersion,text:$('labelText').value})});
+    state.version = result.version; state.annotations = result.boxes; state.history = []; state.selected = -1;
+    const record = state.project.images[state.current]; record.version = result.version; record.status = 'edited'; record.box_count = result.boxes.length;
+    renderImages(); renderBoxList(); await draw(); await checkSaveStatus();
+    $('labelEditor').close(); message('标签文件已保存');
+  } catch(e) { $('labelError').textContent = e.message; }
+  finally { $('saveLabelText').disabled = false; $('cancelLabelText').disabled = false; }
+};
+const confidenceKey = 'ai-label-local.confidence';
+try { const value = localStorage.getItem(confidenceKey); if (value !== null && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1) $('confidence').value = value; } catch (_) {}
+function updateConfidence() { $('confidenceValue').textContent = Number($('confidence').value).toFixed(2); try { localStorage.setItem(confidenceKey, $('confidence').value); } catch (_) {} }
+$('confidence').oninput = updateConfidence; updateConfidence();
 $('deleteBox').onclick = () => { if (state.selected < 0) return; snapshot(); state.annotations.splice(state.selected, 1); state.selected = -1; renderBoxList(); renderCurrentClass(); draw(); };
 $('currentClass').onchange = event => applyCurrentClass(event.target.value);
 $('undo').onclick = () => { const previous = state.history.pop(); if (previous) { state.annotations = JSON.parse(previous); state.selected = -1; renderBoxList(); draw(); } };
@@ -215,7 +215,7 @@ $('import').onclick = async () => {
 };
 function setPredictionBusy(busy) {
   state.predictBusy = busy;
-  ['predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','addBox','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
+  ['predict','predictCurrent','model','confidence','projectSelect','newProject','import','export','save','completeImage','editLabelFile','deleteBox','undo','currentClass','addClass','confirmCrop'].forEach(id => $(id).disabled = busy);
   if (!busy) { prepareCrop(); renderCurrentClass(); }
 }
 function showPredictionProgress(job) {
@@ -267,6 +267,7 @@ async function completeCurrentImage() {
   finally { state.enterBusy = false; }
 }
 document.addEventListener('keydown', event => {
+  if ($('labelEditor').open) return;
   const target = event.target;
   const typing = target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable || (target instanceof HTMLInputElement && target.type !== 'range');
   if (event.key === 'Enter' && !event.isComposing && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !typing) {
@@ -294,7 +295,7 @@ loadProjects().catch(e => message(e.message));
 function prepareCrop() {
  const r=state.images.find(x=>x.id===state.current), side=r?Math.min(r.width,r.height):0;
  state.crop=r?.needs_crop?{left:Math.floor((r.width-side)/2),top:Math.floor((r.height-side)/2),side,width:r.width,height:r.height}:null;
- $('cropPanel').hidden=!state.crop; ['addBox','deleteBox','save','completeImage','undo','currentClass'].forEach(id=>$(id).disabled=Boolean(state.crop)); $('boxList').hidden=Boolean(state.crop);
+ $('cropPanel').hidden=!state.crop; ['editLabelFile','deleteBox','save','completeImage','undo','currentClass'].forEach(id=>$(id).disabled=Boolean(state.crop)); $('boxList').hidden=Boolean(state.crop);
  if(state.crop){const c=state.crop,h=c.width>c.height; $('cropAxis').textContent=h?'水平位置':'垂直位置'; $('cropPosition').max=Math.max(c.width,c.height)-side; $('cropPosition').value=h?c.left:c.top; $('cropInfo').textContent=`${c.width} × ${c.height} → ${side} × ${side}`; $('selection').textContent='待确认裁剪区域';}
 }
 function setCropPosition(value){if(!state.crop)return; const c=state.crop,p=Math.round(Math.max(0,Math.min(Number(value),Math.max(c.width,c.height)-c.side))); c.left=c.width>c.height?p:0; c.top=c.height>c.width?p:0; $('cropPosition').value=p; draw();}

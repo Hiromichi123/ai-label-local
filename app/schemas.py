@@ -111,3 +111,8 @@ class JobView(BaseModel):
     total: int
     errors: list[str] = []
     result: dict[str, Any] | None = None
+
+
+class LabelTextUpdate(BaseModel):
+    version: int = Field(ge=0)
+    text: str
