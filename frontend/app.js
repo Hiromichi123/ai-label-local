@@ -380,6 +380,7 @@ async function refreshTraining() {
     const data = await api(`/api/projects/${projectId}/training`);
     if (state.project?.id !== projectId) return;
     trainingRuns = data.runs;
+    if (['Failed to fetch','NetworkError when attempting to fetch resource.'].includes($('trainingError').textContent)) $('trainingError').textContent = '';
     const summary = data.summary;
     $('trainingSummary').textContent = `可训练：${summary.reviewed} 张已审核图片 / 共 ${summary.total} 张；排除 ${summary.excluded} 张待审核或待裁剪图片。类别：${summary.class_names.join('、')}`;
     $('trainedModel').replaceChildren(new Option('默认或手动指定模型',''), ...trainingRuns.filter(compatibleModel).map(r => new Option(`${r.name} · ${r.created_at.slice(0,16).replace('T',' ')} UTC`,r.id)));
