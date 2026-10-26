@@ -70,8 +70,9 @@ function renderImages() {
   $('images').replaceChildren(...state.images.map(image => {
     const item = document.createElement('div'); item.className = `image-item ${state.current === image.id ? 'active' : ''}`;
     const name = document.createElement('span'); name.textContent = image.filename;
-    const status = document.createElement('span'); status.className = image.status === 'labeled' ? 'image-check' : 'image-state';
-    status.textContent = image.needs_crop ? '待裁剪' : image.status === 'labeled' && image.box_count > 0 ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
+    const reviewed = image.box_count > 0 && ['labeled','edited','approved'].includes(image.status);
+    const status = document.createElement('span'); status.className = reviewed ? 'image-check' : 'image-state';
+    status.textContent = image.needs_crop ? '待裁剪' : image.status === 'predicted' ? '候选·待审核' : reviewed ? '✓' : image.status === 'invalid' ? '标签错误' : '未标注';
     item.append(name, status); item.onclick = () => selectImage(image.id); return item;
   }));
 }
