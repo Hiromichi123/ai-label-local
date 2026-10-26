@@ -113,3 +113,15 @@ def test_prediction_maps_dense_model_ids_back_to_project_ids(setup,tmp_path,monk
         time.sleep(.01)
     assert job['status']=='completed',job
     assert [b['class_id'] for b in s.annotations(p['id'],images[0]['id'])['boxes']]==[5,12]
+
+
+def test_model_in_use_by_training_cannot_be_deleted(setup,tmp_path):
+    c,s,p,_,manager=setup
+    model_root=tmp_path/'models';model_root.mkdir()
+    model=model_root/'training-base.pt';model.write_bytes(b'base')
+    directory=s.root/'training'/('b'*32);directory.mkdir(parents=True)
+    write_json(directory/'run.json',{'id':'b'*32,'project_id':p['id'],'status':'running','params':{'model_path':str(model)}})
+    entry=next(m for m in c.get('/api/models').json()['models'] if m['path']==str(model))
+    assert entry['delete_blocked']
+    assert c.delete('/api/models/'+entry['id']).status_code==409
+    assert model.read_bytes()==b'base'

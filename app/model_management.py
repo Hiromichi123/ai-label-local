@@ -25,6 +25,7 @@ def list_models(storage, training):
         if run.get('status') in ACTIVE:
             active_paths.add(str(Path(run['params']['model_path']).resolve()))
     models = []
+    projects = {p["id"]:p["name"] for p in storage.list_projects()}
     for metadata in (storage.root/'training').glob('*/run.json'):
         run = read_json(metadata,{})
         if run.get('status') != 'completed' or run.get('model_deleted'):
@@ -40,7 +41,7 @@ def list_models(storage, training):
         models.append({'id':identity(path),'name':run['name'],'path':str(path),'kind':'training','project_id':run['project_id'],
                        'class_names':run['class_names'],'class_ids':run.get('class_ids',list(range(len(run['class_names'])))),
                        'imgsz':run['params']['imgsz'],'bytes':sum(p.stat().st_size for p in files),'default':path==default_path,
-                       'delete_blocked':blocked,'run_id':run['id']})
+                       'delete_blocked':blocked,'run_id':run['id'],'project_name':projects.get(run['project_id'],run['project_id']),'epochs':run['params'].get('epochs'),'created_at':run.get('created_at','')})
     model_root = (storage.root.parent/'models').resolve()
     for candidate in model_root.rglob('*') if model_root.is_dir() else []:
         if candidate.is_symlink() or not candidate.is_file() or candidate.suffix.lower() not in {'.pt','.onnx'}:

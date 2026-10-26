@@ -544,6 +544,7 @@ async function refreshManagedModels() {
     const row = document.createElement('div'); row.className = 'managed-model';
     const title = document.createElement('strong'); title.textContent = `${model.name}${model.default ? '（默认）':''} · ${(model.bytes/1048576).toFixed(1)} MB`;
     const path = document.createElement('p'); path.textContent = model.path;
+    const details = document.createElement('p'); details.className='hint'; details.textContent = model.kind==='training' ? `${model.project_name} · ${model.epochs ?? '?'} 轮 · ${model.imgsz} 分辨率 · ${model.created_at ? new Date(model.created_at).toLocaleString() : ''}` : '项目内模型文件';
     const actions = document.createElement('div');
     const use = document.createElement('button'); use.textContent = '用于当前打标';
     use.disabled = Boolean(model.class_names && JSON.stringify(model.class_names)!==JSON.stringify(state.project?.class_names));
@@ -563,7 +564,7 @@ async function refreshManagedModels() {
       } catch(e) { $('modelManagerError').textContent=e.message; }
       finally { modelsBusy=false; }
     };
-    actions.append(use,makeDefault,remove); row.append(title,path,actions);
+    actions.append(use,makeDefault,remove); row.append(title,details,path,actions);
     if (model.delete_blocked) { const reason=document.createElement('p'); reason.className='hint'; reason.textContent=model.delete_blocked; row.append(reason); }
     return row;
   }));
