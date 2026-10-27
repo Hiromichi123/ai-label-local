@@ -19,7 +19,7 @@ from .server_directories import roots, resolve_directory, image_files
 from .labels import parse_yolo, load_label, class_ids, validate_label_text, model_class_mapping
 from .schemas import LabelTextUpdate, TrainingRequest, ProjectRename
 from . import model_management
-from .training import TrainingManager, training_summary
+from .training import TrainingManager, training_summary, initial_weights
 
 
 router = APIRouter(prefix="/api")
@@ -376,6 +376,11 @@ def import_server_directory(request: ServerDirectoryImport):
         error(422, str(exc))
 
 
+@router.get("/training/options")
+def training_options():
+    return {"projects":[{"id":project["id"], "name":project["name"], "summary":training_summary(storage,project["id"])} for project in storage.list_projects()], **initial_weights()}
+
+
 @router.get("/training/environment")
 def training_environment():
     import importlib.util
@@ -404,12 +409,13 @@ def training_settings(project_id: str):
         storage.project(project_id)
         path = storage._project_path(project_id)/"training_settings.json"
         if path.is_file():
-            params = TrainingRequest.model_validate(json.loads(path.read_text(encoding='utf-8')))
+            saved = json.loads(path.read_text(encoding='utf-8'))
+            params = TrainingRequest.model_validate({"project_ids":[project_id], **saved})
             return {"params":params.model_dump(),"source":"saved"}
         runs = training.list(storage,project_id)
         if runs:
-            return {"params":TrainingRequest.model_validate(runs[0]['params']).model_dump(),"source":"last_run"}
-        params = TrainingRequest(model_path=model_management.settings(storage)['default_model_path'])
+            return {"params":TrainingRequest.model_validate({"project_ids":[project_id], **runs[0]['params']}).model_dump(),"source":"last_run"}
+        params = TrainingRequest(project_ids=[project_id],model_path=model_management.settings(storage)['default_model_path'])
         return {"params":params.model_dump(),"source":"defaults"}
     except FileNotFoundError:
         error(404,"project not found")

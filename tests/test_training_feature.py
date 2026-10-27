@@ -26,7 +26,9 @@ def training_setup(tmp_path, monkeypatch):
     p = store.project(project['id'])
     p['images'][records[3]['id']]['status'] = 'predicted'
     store._write_json(store._project_path(project['id'])/'project.json',p)
-    model = tmp_path/'base.pt'
+    model_root=tmp_path/'models'; model_root.mkdir()
+    monkeypatch.setattr('app.training.MODEL_ROOT',model_root)
+    model = model_root/'base.pt'
     model.write_bytes(b'test')
     monkeypatch.setattr(api,'storage',store)
     manager = TrainingManager()
@@ -166,3 +168,106 @@ def test_worker_final_validation_does_not_add_epoch(tmp_path, monkeypatch):
     assert progress['epoch'] == 2
     assert progress['metrics']['mAP'] == .6
     assert Path(progress['model_path']).is_file()
+
+
+def test_merged_snapshot_maps_names_and_namespaces_images(training_setup, tmp_path):
+    client,store,pid,records,model,manager = training_setup
+    other = store.create_project(ProjectCreate(name='second',class_names=['other','object'],class_ids=[0,9]))
+    image = tmp_path/'other.jpg'
+    Image.new('RGB',(64,64),'red').save(image)
+    row = store.import_files(other['id'],[image])[0]
+    store.save_annotations(other['id'],row['id'],0,[Box(class_id=0,x1=5,y1=5,x2=20,y2=20),Box(class_id=9,x1=25,y1=25,x2=45,y2=45)])
+    # Different projects may contain the same local image id.
+    directory=store._project_path(other['id'])
+    other=store.project(other['id'])
+    other['images'].pop(row['id'])
+    for folder in ['images','labels']:
+        suffix='.jpg' if folder=='images' else '.txt'
+        (directory/folder/(row['id']+suffix)).rename(directory/folder/(records[0]['id']+suffix))
+    row.update(id=records[0]['id'],status='edited',version=1)
+    other['images'][row['id']]=row
+    store._write_json(directory/'project.json',other)
+    original=(directory/'labels'/f"{row['id']}.txt").read_bytes()
+    params=TrainingRequest(project_ids=[pid,other['id'],pid],val_ratio=.25).model_dump()
+    target=tmp_path/'merged'
+    counts=snapshot(store,pid,target,params)
+    assert sum(counts.values())==4
+    manifest=read_json(target/'manifest.json')
+    assert {entry['project_id'] for entry in manifest}=={pid,other['id']}
+    assert len({entry['output_id'] for entry in manifest})==4
+    labels=list(target.glob(f"labels/*/{other['id']}_{row['id']}.txt"))
+    assert len(labels)==1
+    assert [int(line.split()[0]) for line in labels[0].read_text().splitlines()]==[1,0]
+    assert (directory/'labels'/f"{row['id']}.txt").read_bytes()==original
+    assert read_json(target/'dataset.yaml')['names']==['object','other']
+    mapping=read_json(target/'class_mapping.json')
+    assert mapping['class_names']==['object','other']
+    assert mapping['projects'][1]['mapping']=={'0':1,'9':0}
+    train={f.stem for f in target.glob('images/train/*.jpg')}
+    val={f.stem for f in target.glob('images/val/*.jpg')}
+    assert not train & val
+
+
+def test_training_weights_are_restricted_to_models(training_setup,tmp_path):
+    client,store,pid,records,model,manager=training_setup
+    outside=tmp_path/'outside.pt'; outside.write_bytes(b'outside')
+    (model.parent/'ignore.onnx').write_bytes(b'not a training weight')
+    nested=model.parent/'nested'; nested.mkdir()
+    (nested/'second.PT').write_bytes(b'checkpoint')
+    options=client.get('/api/training/options').json()
+    assert {m['name'] for m in options['models']}=={'base.pt',str(Path('nested')/'second.PT')}
+    assert options['root']==str(model.parent)
+    assert options['projects'][0]['summary']['reviewed']==3
+    response=client.post(f'/api/projects/{pid}/training',json={'model_path':str(outside)})
+    assert response.status_code==422
+    assert 'models' in response.json()['detail']['message']
+    assert manager.active is None
+    assert client.post(f'/api/projects/{pid}/training',json={'model_path':str(model),'project_ids':['notfound123']}).status_code==404
+
+
+def test_multi_training_metadata_and_preferences(training_setup,monkeypatch):
+    from app.training import write_json
+    client,store,pid,records,model,manager=training_setup
+    other=store.create_project(ProjectCreate(name='second',class_names=['different'],class_ids=[0]))
+    images=store.import_files(other['id'],[store.image_path(pid,records[0]['id'])])
+    store.save_annotations(other['id'],images[0]['id'],0,[Box(class_id=0,x1=5,y1=5,x2=25,y2=25)])
+    class SuccessProcess:
+        def __init__(self,args,**kwargs): self.path=Path(read_json(Path(args[-1]))['path'])
+        def wait(self):
+            best=self.path/'output'/'train'/'weights'/'best.pt'
+            best.parent.mkdir(parents=True); best.write_bytes(b'checkpoint')
+            write_json(self.path/'progress.json',{'epoch':1,'model_path':str(best)})
+            return 0
+    monkeypatch.setattr('app.training.subprocess.Popen',SuccessProcess)
+    response=client.post(f'/api/projects/{pid}/training',json={'model_path':str(model),'project_ids':[pid,other['id']],'epochs':1})
+    assert response.status_code==200,response.text
+    run_id=response.json()['id']
+    for _ in range(300):
+        run=client.get(f'/api/projects/{pid}/training/{run_id}').json()
+        if run['status'] not in {'preparing','running'}: break
+        time.sleep(.01)
+    assert run['status']=='completed',run
+    assert run['class_names']==['object','different']
+    assert run['class_ids']==[0,1]
+    assert run['counts']=={'train':3,'val':1}
+    assert [p['id'] for p in run['source_projects']]==[pid,other['id']]
+    saved=client.get(f'/api/projects/{pid}/training-settings').json()['params']
+    assert saved['project_ids']==[pid,other['id']]
+    catalog=client.get('/api/models').json()['models']
+    final=next(m for m in catalog if m.get('run_id')==run_id)
+    assert final['class_names']==['object','different']
+
+
+def test_training_metadata_retries_transient_permission_error(tmp_path,monkeypatch):
+    from app.training import write_json
+    path=tmp_path/'run.json'
+    write_json(path,{'status':'running'})
+    original=Path.read_text
+    calls=[]
+    def temporarily_busy(self,*args,**kwargs):
+        if self==path and not calls:
+            calls.append(True)
+            raise PermissionError('file is being replaced')
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(Path,'read_text',temporarily_busy)
+    assert read_json(path)=={'status':'running'}

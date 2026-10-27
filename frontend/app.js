@@ -431,7 +431,52 @@ $('serverImport').onclick = async () => {
   } catch(e) { $('serverError').textContent = typeof e.message === 'string' ? e.message : '导入失败'; }
   finally { serverImportBusy = false; controls.forEach(el => el.disabled = false); $('serverImportProgress').hidden = true; }
 };
-let modelCatalog = [];
+let modelCatalog = [], trainingDatasetOptions = [];
+function selectedTrainingProjects() { return [...$('trainingDatasets').querySelectorAll('input:checked')].map(input=>input.value); }
+function renderTrainingDatasets(ids) {
+  const signature=JSON.stringify([trainingDatasetOptions,ids]);
+  if($('trainingDatasets').dataset.signature===signature) { updateCombinedTrainingSummary(); return; }
+  $('trainingDatasets').dataset.signature=signature;
+  const selected=new Set(ids);
+  $('trainingDatasets').replaceChildren(...trainingDatasetOptions.map(project=>{
+    const label=document.createElement('label'), input=document.createElement('input');
+    input.type='checkbox'; input.value=project.id; input.checked=selected.has(project.id);
+    input.onchange=()=>{ noteTrainingParameterChange(); updateCombinedTrainingSummary(); };
+    label.append(input,document.createTextNode(`${project.name} · 已审核 ${project.summary.reviewed} / ${project.summary.total} 张`));
+    return label;
+  }));
+  updateCombinedTrainingSummary();
+}
+function updateCombinedTrainingSummary() {
+  const ids=selectedTrainingProjects(), projects=trainingDatasetOptions.filter(p=>ids.includes(p.id));
+  const reviewed=projects.reduce((n,p)=>n+p.summary.reviewed,0), total=projects.reduce((n,p)=>n+p.summary.total,0);
+  const names=[...new Set(projects.flatMap(p=>p.summary.class_names))];
+  $('trainingSummary').textContent=`已选 ${projects.length} 个数据集 · 可训练 ${reviewed} / 共 ${total} 张；排除 ${total-reviewed} 张待审核或待裁剪图片。合并类别（${names.length}）：${names.join('、') || '无'}`;
+  $('startTraining').disabled=!projects.length || reviewed<2 || !state.project || trainingRuns.some(r=>['preparing','running','stopping'].includes(r.status)) || state.trainingAvailable===false || !$('trainModel').value || $('trainModel').selectedOptions[0]?.disabled;
+}
+$('selectAllTrainingProjects').onclick=()=>{ renderTrainingDatasets(trainingDatasetOptions.map(p=>p.id)); noteTrainingParameterChange(); };
+$('clearTrainingProjects').onclick=()=>{ renderTrainingDatasets([]); noteTrainingParameterChange(); };
+async function refreshTrainingOptions(projectId) {
+  const options=await api('/api/training/options');
+  if(state.project?.id!==projectId) return;
+  trainingDatasetOptions=options.projects;
+  const raw=trainingParameterCache.get(projectId)?.raw;
+  renderTrainingDatasets(raw?.project_ids ?? [projectId]);
+  const chosen=$('trainModel').value || raw?.model_path || '';
+  const signature=JSON.stringify(options.models);
+  if($('trainModel').dataset.weights!==signature) {
+    $('trainModel').replaceChildren(new Option(options.models.length?'请选择 .pt 初始权重':'models 目录内没有 .pt 权重',''),...options.models.map(m=>new Option(m.name,m.path)));
+    $('trainModel').dataset.weights=signature;
+  }
+  if(chosen && !options.models.some(m=>m.path===chosen)) {
+    let unavailable=[...$('trainModel').options].find(m=>m.value===chosen);
+    if(!unavailable) { unavailable=new Option('原权重不在 models 目录或已移除，请重新选择',chosen); $('trainModel').add(unavailable); }
+    unavailable.textContent='原权重不在 models 目录或已移除，请重新选择'; unavailable.disabled=true;
+  }
+  $('trainModel').value=chosen;
+  $('trainingModelRoot').textContent=options.root;
+  updateCombinedTrainingSummary();
+}
 let trainingRuns = [], selectedTrainingRun = '', trainingPoll = null, trainingRefreshing = false, trainingRefreshPending = false;
 const trainingNames = {preparing:'准备数据快照',running:'正在训练',completed:'训练完成',failed:'训练失败',cancelled:'已停止',stopping:'正在停止'};
 async function showPage(tab) {
@@ -465,13 +510,12 @@ async function refreshTraining() {
   trainingRefreshing = true;
   const projectId = state.project.id;
   try {
-    const [data,catalog] = await Promise.all([api(`/api/projects/${projectId}/training`),api('/api/models')]);
+    const [data,catalog] = await Promise.all([api(`/api/projects/${projectId}/training`),api('/api/models'),refreshTrainingOptions(projectId)]);
     if (state.project?.id !== projectId) return;
     trainingRuns = data.runs;
     modelCatalog = catalog.models.map(model=>({...model,model_path:model.path,model_available:true,params:{imgsz:model.imgsz}}));
     if (['Failed to fetch','NetworkError when attempting to fetch resource.'].includes($('trainingError').textContent)) $('trainingError').textContent = '';
-    const summary = data.summary;
-    $('trainingSummary').textContent = `可训练：${summary.reviewed} 张已审核图片 / 共 ${summary.total} 张；排除 ${summary.excluded} 张待审核或待裁剪图片。类别：${summary.class_names.join('、')}`;
+    updateCombinedTrainingSummary();
     const groups = new Map();
     for (const model of modelCatalog) {
       const groupName = model.project_name || '项目内模型文件';
@@ -500,7 +544,7 @@ async function refreshTraining() {
     if (!trainingRuns.some(r => r.id === selectedTrainingRun)) selectedTrainingRun = trainingRuns[0]?.id || '';
     $('trainingRun').replaceChildren(...trainingRuns.map(r => new Option(`${r.name} · ${trainingNames[r.status] || r.status} · ${r.created_at.slice(0,16)} UTC`,r.id)));
     $('trainingRun').value = selectedTrainingRun;
-    $('startTraining').disabled = summary.reviewed < 2 || trainingRuns.some(r => ['preparing','running','stopping'].includes(r.status)) || state.trainingAvailable === false;
+    updateCombinedTrainingSummary();
     const prefs = trainingParameterCache.get(projectId);
     if (prefs?.dirty && !trainingParametersTimer) flushTrainingParameters(projectId).catch(() => {});
     if (selectedTrainingRun) await renderTrainingRun(projectId, selectedTrainingRun);
@@ -513,7 +557,7 @@ async function renderTrainingRun(projectId, runId) {
   const total = run.params.epochs, epoch = run.epoch || 0;
   $('trainingProgress').value = run.status === 'completed' ? 100 : Math.min(100,epoch/total*100);
   const count = run.counts ? ` · 训练 ${run.counts.train} 张 / 验证 ${run.counts.val} 张` : '';
-  $('trainingStatus').textContent = `${trainingNames[run.status] || run.status} · ${epoch}/${total} 轮${count}${run.error ? ` · ${run.error}` : ''}${run.status === 'completed' && epoch < total ? ' · 已提前停止' : ''}`;
+  $('trainingStatus').textContent = `${trainingNames[run.status] || run.status} · ${epoch}/${total} 轮${count}${run.source_projects?.length ? ` · 数据集：${run.source_projects.map(p=>p.name).join('、')}` : ''}${run.error ? ` · ${run.error}` : ''}${run.status === 'completed' && epoch < total ? ' · 已提前停止' : ''}`;
   $('trainingMetrics').textContent = Object.entries(run.metrics || {}).map(([k,v]) => `${k}: ${Number(v).toFixed(4)}`).join(' · ');
   const log = $('trainingLog'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight-40;
   log.textContent = run.log || '等待训练日志…'; if (atEnd) log.scrollTop = log.scrollHeight;
@@ -599,8 +643,8 @@ const trainingParamFields = {name:'trainName',model_path:'trainModel',device:'tr
 const trainingParameterCache = new Map();
 const trainingFormDefaults = Object.fromEntries(Object.entries(trainingParamFields).map(([key,id]) => [key,$(id).value]));
 let trainingParametersTimer = null;
-function captureTrainingRaw() { return Object.fromEntries(Object.entries(trainingParamFields).map(([key,id]) => [key,$(id).value])); }
-function trainingParams(raw) { return Object.fromEntries(Object.entries(raw).map(([key,value]) => [key,['name','model_path','device'].includes(key) ? value.trim() : Number(value)])); }
+function captureTrainingRaw() { return {...Object.fromEntries(Object.entries(trainingParamFields).map(([key,id]) => [key,$(id).value])),project_ids:selectedTrainingProjects()}; }
+function trainingParams(raw) { return Object.fromEntries(Object.entries(raw).map(([key,value]) => [key,key==='project_ids' ? value : ['name','model_path','device'].includes(key) ? value.trim() : Number(value)])); }
 function validTrainingPreferences() { return Object.entries(trainingParamFields).every(([key,id]) => key==='model_path' || $(id).checkValidity()); }
 function trainingDraftKey(id) { return `ai-label-local.training-draft.${id}`; }
 function setTrainingSaveStatus(id,text) { if (state.trainingFormProject === id) $('trainingSettingsStatus').textContent=text; }
@@ -608,7 +652,10 @@ function saveTrainingDraft(id,entry) { try { localStorage.setItem(trainingDraftK
 function applyTrainingRaw(raw) {
   const device = String(raw.device);
   if (![...$('trainDevice').options].some(option => option.value===device)) $('trainDevice').add(new Option(`${device}（当前不可用，请调整设备）`,device));
+  const model=String(raw.model_path || '');
+  if(model && ![...$('trainModel').options].some(o=>o.value===model)) { const option=new Option('正在检查初始权重…',model); option.disabled=true; $('trainModel').add(option); }
   for (const [key,id] of Object.entries(trainingParamFields)) $(id).value = raw[key] ?? trainingFormDefaults[key];
+  renderTrainingDatasets(raw.project_ids ?? [state.project.id]);
 }
 async function restoreTrainingParameters(projectId) {
   if (state.trainingFormProject === projectId) return;
@@ -624,7 +671,7 @@ async function restoreTrainingParameters(projectId) {
     if (!entry.dirty && draft?.dirty && draft.raw) { entry.raw = {...saved.params,...draft.raw}; entry.dirty = true; entry.revision++; }
   } catch (_) {}
   if (!entry.dirty) {
-    entry.raw = Object.fromEntries(Object.entries(saved.params).map(([key,value]) => [key,String(value)]));
+    entry.raw = Object.fromEntries(Object.entries(saved.params).map(([key,value]) => [key,key==='project_ids' ? value : String(value)]));
     if (saved.source === 'defaults') entry.raw.device = $('trainDevice').options[0]?.value || 'cpu';
   }
   state.trainingFormProject = projectId;
@@ -662,7 +709,7 @@ async function flushTrainingParameters(id = state.trainingFormProject) {
   if (entry.dirty) return flushTrainingParameters(id);
 }
 $('trainingForm').addEventListener('input',noteTrainingParameterChange);
-$('trainingForm').addEventListener('change',() => { noteTrainingParameterChange(); clearTimeout(trainingParametersTimer); trainingParametersTimer=null; if (validTrainingPreferences()) flushTrainingParameters().catch(() => {}); });
+$('trainingForm').addEventListener('change',() => { updateCombinedTrainingSummary(); noteTrainingParameterChange(); clearTimeout(trainingParametersTimer); trainingParametersTimer=null; if (validTrainingPreferences()) flushTrainingParameters().catch(() => {}); });
 $('saveTrainingSettings').onclick = async () => {
   noteTrainingParameterChange(); clearTimeout(trainingParametersTimer); trainingParametersTimer=null;
   if (!validTrainingPreferences()) { setTrainingSaveStatus(state.trainingFormProject,'参数无效，已保留本机草稿'); return; }

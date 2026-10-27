@@ -20,12 +20,13 @@
     <div class="workspace-body"><div class="canvas-wrap"><canvas id="canvas" tabindex="0" aria-label="标注画布：左键拖动打标，右键选框，Delete 删除"></canvas></div><aside class="box-panel"><section><h2>智能打标</h2><label for="trainedModel">已训练模型</label><select id="trainedModel"><option value="">默认或手动指定模型</option></select><button id="refreshModelList">刷新模型列表</button><button id="manageModels">模型管理</button><div id="modelCatalogInfo" class="hint"></div><input id="model" placeholder="本地 .pt 或 .onnx 路径"><label>置信度 <output id="confidenceValue" for="confidence">0.25</output><input aria-label="智能打标置信度" id="confidence" type="range" value="0.25" min="0" max="1" step="0.01"></label><div class="predict-actions"><button id="predictCurrent">标注当前图片（覆盖已有）</button><button id="predict">标注未完成图片</button></div><div class="hint">未完成包含待审核候选；已确认的标注保留。</div><div class="prediction-progress"><progress id="predictProgress" value="0" max="100" aria-label="智能打标进度"></progress><div id="job" role="status" aria-live="polite">尚未开始</div></div></section><h2>当前图片框</h2><div id="boxList" class="box-list"></div></aside></div></section>
 </main>
 <section id="trainingPage" hidden>
-<h2>基于已审核标注训练模型</h2><label for="trainingProject">当前数据集</label><select id="trainingProject"></select>
+<h2>基于已审核标注训练模型</h2><label for="trainingProject">训练参数与结果所属项目</label><select id="trainingProject"></select>
+<fieldset class="training-datasets"><legend>勾选参与训练的数据集</legend><div class="dataset-actions"><button id="selectAllTrainingProjects" type="button">全选</button><button id="clearTrainingProjects" type="button">清空</button></div><div id="trainingDatasets"></div></fieldset>
 <p id="trainingSummary" role="status">选择项目以查看可训练图片</p>
-<p class="hint">仅使用已审核且完成裁剪的图片，包含已确认的无目标图片；待审核候选不参与。训练会保存独立数据快照，训练集与验证集不重叠。</p>
+<p class="hint">将勾选数据集的已审核图片合并为一个训练快照，训练出一个模型；同名类别合并，不同名称保留为不同类别。待审核或待裁剪图片不参与，已确认的无目标图片参与训练。</p>
 <form id="trainingForm" class="training-grid">
 <label>模型名称<input id="trainName" value="标注模型" required maxlength="80"></label>
-<label>初始权重（服务器 .pt 路径）<input id="trainModel" required placeholder="现有 YOLO .pt 模型"></label>
+<label>初始权重（项目 models 目录）<select id="trainModel" required><option value="">请选择 .pt 初始权重</option></select><span id="trainingModelRoot" class="hint"></span></label>
 <label>训练设备<select id="trainDevice"><option value="cpu">CPU</option></select></label>
 <label>轮数 Epochs<input id="trainEpochs" type="number" min="1" max="2000" value="100" required></label>
 <label>分辨率（32 的倍数）<input id="trainImgsz" type="number" min="64" max="2048" step="32" value="960" required></label>

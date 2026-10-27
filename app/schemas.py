@@ -136,6 +136,7 @@ class ServerDirectoryImport(ProjectCreate):
 
 
 class TrainingRequest(BaseModel):
+    project_ids: list[str] = Field(default_factory=list, max_length=1000)
     name: str = Field(default="标注模型", min_length=1, max_length=80)
     model_path: str = ""
     epochs: int = Field(default=100, ge=1, le=2000)
